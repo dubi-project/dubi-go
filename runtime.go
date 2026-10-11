@@ -46,6 +46,7 @@ type Runtime struct {
 	registry    *Registry
 	profiles    map[string]Profile
 	profile     string
+	allEntries  []Entry
 	entries     []Entry
 	instances   []Instance
 	moduleNames []string
@@ -62,14 +63,15 @@ func NewRuntime() *Runtime {
 // New is the concise constructor used by applications.
 func New() *Runtime { return NewRuntime() }
 
-// Run prepares and starts the runtime for small applications and examples.
+// Run prepares and starts this Runtime, then returns. Process-level waiting is
+// provided by the package-level Run or Wait functions.
 func (rt *Runtime) Run(profile ...string) error {
 	if len(profile) > 1 {
 		return fmt.Errorf("dubi: Run accepts at most one profile")
 	}
 	if len(profile) == 1 {
 		rt.mu.Lock()
-		rt.profile = profile[0]
+		rt.profile = normalizeName(profile[0])
 		rt.mu.Unlock()
 	}
 	ctx := context.Background()
@@ -82,11 +84,16 @@ func (rt *Runtime) Run(profile ...string) error {
 	if err := rt.Start(ctx); err != nil {
 		return err
 	}
-	return Wait()
+	return nil
 }
 
 // Run starts the process-wide default runtime.
-func Run(profile ...string) error { return DefaultRuntime().Run(profile...) }
+func Run(profile ...string) error {
+	if err := DefaultRuntime().Run(profile...); err != nil {
+		return err
+	}
+	return Wait()
+}
 
 // End gracefully stops and closes the runtime. It is safe to call after a
 // partially completed startup, and is a no-op for a new or already closed
@@ -151,6 +158,9 @@ func (rt *Runtime) Register(name string, value any) {
 }
 func (rt *Runtime) Entries() []Entry { return append([]Entry(nil), rt.entries...) }
 
+// AllEntries returns all merged component entries before Profile filtering.
+func (rt *Runtime) AllEntries() []Entry { return append([]Entry(nil), rt.allEntries...) }
+
 func (rt *Runtime) Setup(ctx context.Context) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -177,6 +187,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 		all = append(all, Entry{Name: name, Value: value, Scope: registrationScope(value)})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+	rt.allEntries = all
 	var active *Profile
 	if rt.profile != "" {
 		profile, ok := profiles[rt.profile]

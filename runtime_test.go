@@ -232,10 +232,11 @@ func TestRuntimeCreatesIsolatedModuleInstances(t *testing.T) {
 	}
 }
 
-func TestRuntimeRunWaitAndEnd(t *testing.T) {
+func TestRuntimeRunAndEnd(t *testing.T) {
 	rt := NewRuntime()
-	done := make(chan error, 1)
-	go func() { done <- rt.Run() }()
+	if err := rt.Run(); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		runtimes, _ := runtimeManager.snapshot()
@@ -249,14 +250,6 @@ func TestRuntimeRunWaitAndEnd(t *testing.T) {
 	}
 	if err := rt.End(); err != nil {
 		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runtime Run did not return after End")
 	}
 }
 
