@@ -6,15 +6,23 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	. "github.com/dubi-project/dubi-go/base"
 )
 
 type testModule struct {
-	state []string
+	state    []string
+	metaGood bool
 }
 
 func (m *testModule) New() Instance        { return m }
 func (m *testModule) Register(string, any) {}
-func (m *testModule) Setup(*Context) error { m.state = append(m.state, "setup"); return nil }
+func (m *testModule) Config(Map) error     { m.state = append(m.state, "config"); return nil }
+func (m *testModule) Setup(ctx *Context) error {
+	m.metaGood = ctx != nil && ctx.Meta != nil && ctx.Meta.runtime == ctx.Runtime
+	m.state = append(m.state, "setup")
+	return nil
+}
 func (m *testModule) Open(*Context) error  { m.state = append(m.state, "open"); return nil }
 func (m *testModule) Start(*Context) error { m.state = append(m.state, "start"); return nil }
 func (m *testModule) Stop(*Context) error  { m.state = append(m.state, "stop"); return nil }
@@ -29,7 +37,7 @@ func (m *receivingModule) New() Instance { return m }
 
 type scopedRouter struct{}
 
-func (scopedRouter) Scope() string { return "http:router" }
+func (scopedRouter) Scope() string { return "web:router" }
 
 func (m *receivingModule) Register(name string, _ any) {
 	m.registered = append(m.registered, name)
@@ -58,6 +66,7 @@ func (i *isolatedInstance) Register(name string, _ any) {
 	i.names = append(i.names, name)
 	i.mu.Unlock()
 }
+func (*isolatedInstance) Config(Map) error     { return nil }
 func (*isolatedInstance) Setup(*Context) error { return nil }
 func (*isolatedInstance) Open(*Context) error  { return nil }
 func (*isolatedInstance) Start(*Context) error { return nil }
@@ -99,8 +108,11 @@ func TestRuntimeLoadsAllAndRunsLifecycle(t *testing.T) {
 	if err := rt.End(); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := m.state, []string{"setup", "open", "start", "stop", "close"}; !reflect.DeepEqual(got, want) {
+	if got, want := m.state, []string{"config", "setup", "open", "start", "stop", "close"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("lifecycle = %v, want %v", got, want)
+	}
+	if !m.metaGood {
+		t.Fatal("lifecycle context did not receive Runtime-bound Meta")
 	}
 }
 
@@ -112,7 +124,7 @@ func TestRuntimeProfileAndLocalOverride(t *testing.T) {
 	r.Register("worker.run", "excluded")
 	rt := NewRuntime()
 	copyRegistry(rt, r)
-	rt.profile = "api"
+	rt.identity.Profile = "api"
 	rt.Register("user.get", "local")
 	rt.Register("http.index", struct{}{})
 	if err := rt.Setup(context.Background()); err != nil {
@@ -147,18 +159,48 @@ func TestRuntimeDispatchesRegistrationsToMountedModules(t *testing.T) {
 
 func TestProfileMatchesComponentScope(t *testing.T) {
 	r := NewRegistry()
-	r.Register("api", Profile{Include: []string{"http:router:*"}})
+	r.Register("api", Profile{Include: []string{"web:router:*"}})
 	r.Register("index", scopedRouter{})
 	r.Register("debug", struct{}{})
 	rt := NewRuntime()
 	copyRegistry(rt, r)
-	rt.profile = "api"
+	rt.identity.Profile = "api"
 	if err := rt.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	entries := rt.Entries()
-	if len(entries) != 1 || entries[0].Key() != "http:router:index" {
+	if len(entries) != 1 || entries[0].Key() != "web:router:index" {
 		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestProfileKeepsFoundationRegistrations(t *testing.T) {
+	rt := NewRuntime()
+	rt.Register("web", Profile{Include: []string{"core:method:*"}})
+	rt.Register("user.get", Method{})
+	rt.Register("custom-type", Type{Name: "custom"})
+	rt.Register("custom-codec", Codec{
+		Encode: func(value any) (any, error) {
+			return []byte("custom"), nil
+		},
+	})
+	rt.identity.Profile = "web"
+
+	if err := rt.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := find(rt.Entries(), "custom-type"); !ok {
+		t.Fatalf("foundation type was filtered by profile: %#v", rt.Entries())
+	}
+	if _, ok := find(rt.Entries(), "custom-codec"); !ok {
+		t.Fatalf("foundation codec was filtered by profile: %#v", rt.Entries())
+	}
+	if _, ok := rt.basic.types["custom-type"]; !ok {
+		t.Fatalf("custom type was not registered in the Runtime basic instance: %#v", rt.basic.types)
+	}
+	encoded, err := rt.Marshal("custom-codec", "value")
+	if err != nil || string(encoded) != "custom" {
+		t.Fatalf("custom codec = %q, %v", encoded, err)
 	}
 }
 

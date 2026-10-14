@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	. "github.com/dubi-project/dubi-go/base"
 )
 
 type lifecycle uint8
@@ -28,6 +30,7 @@ type Module interface {
 // Instance owns one Runtime's registrations and lifecycle state.
 type Instance interface {
 	Register(string, any)
+	Config(Map) error
 	Setup(*Context) error
 	Open(*Context) error
 	Start(*Context) error
@@ -35,33 +38,86 @@ type Instance interface {
 	Close(*Context) error
 }
 
+// RuntimeOption configures one Runtime before its lifecycle starts.
+type RuntimeOption func(*Runtime)
+
 type Context struct {
 	context.Context
+	*Meta
 	Runtime *Runtime
 	Name    string
+	Config  any
+	Setting Map
+	Value   Map
+	Args    Map
 }
 
 type Runtime struct {
-	mu          sync.Mutex
-	registry    *Registry
-	profiles    map[string]Profile
-	profile     string
-	allEntries  []Entry
-	entries     []Entry
-	instances   []Instance
-	moduleNames []string
-	state       lifecycle
+	mu           sync.Mutex
+	registry     *Registry
+	profiles     map[string]Profile
+	identity     Identity
+	nodeSet      bool
+	profileSet   bool
+	allEntries   []Entry
+	entries      []Entry
+	instances    []Instance
+	moduleNames  []string
+	core         *coreInstance
+	basic        *basicInstance
+	codec        *codecInstance
+	config       Map
+	configLoaded bool
+	bootstrap    Bootstrap
+	state        lifecycle
 }
 
-func NewRuntime() *Runtime {
-	return &Runtime{
-		registry: NewRegistry(),
-		profiles: make(map[string]Profile),
+func NewRuntime(options ...RuntimeOption) *Runtime {
+	identity := defaultIdentity()
+	rt := &Runtime{
+		registry:   NewRegistry(),
+		profiles:   make(map[string]Profile),
+		config:     Map{},
+		identity:   identity,
+		bootstrap:  defaultBootstrap(),
+		nodeSet:    identity.Node != "",
+		profileSet: identity.Profile != "",
 	}
+	for _, option := range options {
+		if option != nil {
+			option(rt)
+		}
+	}
+	return rt
 }
 
 // New is the concise constructor used by applications.
-func New() *Runtime { return NewRuntime() }
+func New(options ...RuntimeOption) *Runtime { return NewRuntime(options...) }
+
+// Identity returns a copy of this Runtime's identity scope.
+func (rt *Runtime) Identity() Identity {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	identity := rt.identity
+	if identity.Node == "" {
+		identity.Node = defaultNodeID()
+	}
+	return identity
+}
+
+// Endpoints returns the configured Dubi endpoints for this Runtime.
+func (rt *Runtime) Endpoints() []string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return append([]string(nil), rt.bootstrap.Endpoints...)
+}
+
+// Auth returns a copy of the connection authentication settings.
+func (rt *Runtime) Auth() Map {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.bootstrap.Auth.Clone()
+}
 
 // Run prepares and starts this Runtime, then returns. Process-level waiting is
 // provided by the package-level Run or Wait functions.
@@ -69,11 +125,17 @@ func (rt *Runtime) Run(profile ...string) error {
 	if len(profile) > 1 {
 		return fmt.Errorf("dubi: Run accepts at most one profile")
 	}
-	if len(profile) == 1 {
-		rt.mu.Lock()
-		rt.profile = normalizeName(profile[0])
+	rt.mu.Lock()
+	if rt.state != stateNew {
+		state := rt.state
 		rt.mu.Unlock()
+		return fmt.Errorf("dubi: run called in state %s", state)
 	}
+	if len(profile) == 1 {
+		rt.identity.Profile = strings.TrimSpace(profile[0])
+		rt.profileSet = true
+	}
+	rt.mu.Unlock()
 	ctx := context.Background()
 	if err := rt.Setup(ctx); err != nil {
 		return err
@@ -167,6 +229,11 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	if rt.state != stateNew {
 		return fmt.Errorf("dubi: setup called in state %s", rt.state)
 	}
+	if !rt.configLoaded {
+		if err := rt.loadConfig(); err != nil {
+			return err
+		}
+	}
 	merged := make(map[string]any)
 	profiles := make(map[string]Profile)
 	for _, entry := range globalRegistry.Entries() {
@@ -179,6 +246,13 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	for _, entry := range rt.registry.Entries() {
 		merged[entry.Name] = entry.Value
 	}
+	configured, err := configuredProfiles(rt.config)
+	if err != nil {
+		return fmt.Errorf("dubi: load profiles: %w", err)
+	}
+	for name, profile := range configured {
+		profiles[name] = profile
+	}
 	for name, profile := range rt.profiles {
 		profiles[name] = profile
 	}
@@ -189,16 +263,21 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 	rt.allEntries = all
 	var active *Profile
-	if rt.profile != "" {
-		profile, ok := profiles[rt.profile]
-		if !ok {
-			return &NotFoundError{Kind: "profile", Name: rt.profile}
+	if rt.identity.Profile != "" {
+		profile, err := resolveProfiles(profiles, rt.identity.Profile)
+		if err != nil {
+			return err
 		}
 		active = &profile
 	}
 	selected := make([]Entry, 0, len(all))
 	for _, entry := range all {
-		if active == nil || active.matches(entry.Key()) {
+		// Basic and codec registrations describe the Runtime's foundation. They
+		// are always delivered to their module, even when a Profile selects a
+		// smaller set of business components. A Profile chooses entry modules;
+		// it does not make JSON, types, MIME values, status text, or custom
+		// codecs disappear from the Runtime.
+		if active == nil || isFoundationEntry(entry) || active.matches(entry.Key()) {
 			selected = append(selected, entry)
 		}
 	}
@@ -213,8 +292,25 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 		}
 		instances[i] = instance
 		names[i] = moduleName(module)
+		if core, ok := instance.(*coreInstance); ok {
+			rt.core = core
+		}
+		if basic, ok := instance.(*basicInstance); ok {
+			rt.basic = basic
+		}
+		if codec, ok := instance.(*codecInstance); ok {
+			rt.codec = codec
+		}
 	}
-	base := &Context{Context: ctx, Runtime: rt}
+	if rt.basic != nil {
+		rt.basic.codec = rt.codec
+	}
+	base := rt.lifecycleContext(ctx)
+	for i, instance := range instances {
+		if err := instance.Config(rt.config.Clone()); err != nil {
+			return fmt.Errorf("dubi: config %q: %w", names[i], err)
+		}
+	}
 	for _, instance := range instances {
 		for _, registration := range selected {
 			instance.Register(registration.Name, registration.Value)
@@ -230,6 +326,31 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	rt.moduleNames = names
 	rt.state = stateSetup
 	return nil
+}
+
+// isFoundationEntry reports whether an entry configures one of the process
+// foundation modules. Foundation registrations are scoped per Runtime, but
+// are independent of the business Profile selected for that Runtime.
+func isFoundationEntry(entry Entry) bool {
+	if entry.Scope == "codec" || entry.Scope == "basic" || strings.HasPrefix(entry.Scope, "basic:") {
+		return true
+	}
+	// Keep the type check as a compatibility guard for foundation values that
+	// predate Scope methods, including the short []string MIME form.
+	switch entry.Value.(type) {
+	case Type, *Type, Language, *Language, Mime, []string,
+		Status, *Status, Statuses, *Statuses, Codec, *Codec:
+		return true
+	default:
+		return false
+	}
+}
+
+// Config returns a copy of the Runtime configuration delivered to modules.
+func (rt *Runtime) Config() Map {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.config.Clone()
 }
 
 func asProfile(value any) (Profile, bool) {
@@ -250,7 +371,7 @@ func (rt *Runtime) Open(ctx context.Context) error {
 	if rt.state != stateSetup {
 		return fmt.Errorf("dubi: open called in state %s", rt.state)
 	}
-	base := &Context{Context: ctx, Runtime: rt}
+	base := rt.lifecycleContext(ctx)
 	instances := rt.instances
 	opened := 0
 	for i, instance := range instances {
@@ -283,7 +404,7 @@ func (rt *Runtime) start(ctx context.Context) error {
 	if rt.state != stateOpen {
 		return fmt.Errorf("dubi: start called in state %s", rt.state)
 	}
-	base := &Context{Context: ctx, Runtime: rt}
+	base := rt.lifecycleContext(ctx)
 	instances := rt.instances
 	started := 0
 	for i, instance := range instances {
@@ -306,7 +427,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	if rt.state != stateStarted {
 		return fmt.Errorf("dubi: stop called in state %s", rt.state)
 	}
-	base := &Context{Context: ctx, Runtime: rt}
+	base := rt.lifecycleContext(ctx)
 	instances := rt.instances
 	var first error
 	for i := len(instances) - 1; i >= 0; i-- {
@@ -325,7 +446,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	if rt.state != stateStopped && rt.state != stateOpen && rt.state != stateSetup {
 		return fmt.Errorf("dubi: close called in state %s", rt.state)
 	}
-	base := &Context{Context: ctx, Runtime: rt}
+	base := rt.lifecycleContext(ctx)
 	instances := rt.instances
 	var first error
 	for i := len(instances) - 1; i >= 0; i-- {
@@ -340,6 +461,20 @@ func (rt *Runtime) Close(ctx context.Context) error {
 
 func normalizeScope(scope string) string {
 	return strings.Trim(strings.ToLower(scope), ". ")
+}
+
+// lifecycleContext gives every module lifecycle callback the same Runtime
+// bound Meta facade. Modules can use ctx.Marshal, ctx.Mapping, ctx.String and
+// ctx.Invoke without reaching into Runtime directly.
+func (rt *Runtime) lifecycleContext(ctx context.Context) *Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &Context{
+		Context: ctx,
+		Meta:    NewMeta(rt).WithContext(ctx),
+		Runtime: rt,
+	}
 }
 
 func moduleName(module Module) string {

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	dubi "github.com/dubi-project/dubi-go"
+	. "github.com/dubi-project/dubi-go/base"
 )
 
 var _ dubi.Instance = (*Instance)(nil)
@@ -25,6 +26,8 @@ func (i *Instance) init() {
 	i.handlers = make(map[string]Handler)
 	i.mu.Unlock()
 }
+
+func (*Instance) Config(Map) error { return nil }
 
 func (i *Instance) Setup(*dubi.Context) error { return nil }
 

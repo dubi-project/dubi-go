@@ -10,4 +10,6 @@ dubi.Register("worker", dubi.Profile{})
 ```
 
 Shared dynamic values live in [`base`](base): `base.Any`, `base.Map`,
-`base.List`, and `base.Result`.
+`base.List`, and `base.Res`.
+
+The Web entry module is documented in [`web`](web/README.md).

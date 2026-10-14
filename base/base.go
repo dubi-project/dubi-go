@@ -14,10 +14,6 @@ type Map map[string]Any
 // List is a dynamic array used where naming the shape improves readability.
 type List []Any
 
-// Result is the conventional dynamic response object. Capabilities may add
-// their own typed response wrappers without changing the framework contract.
-type Result Map
-
 func (m Map) Get(key string) (Any, bool) {
 	if m == nil {
 		return nil, false

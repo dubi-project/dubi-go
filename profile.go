@@ -1,6 +1,10 @@
 package dubi
 
-import "path"
+import (
+	"fmt"
+	"path"
+	"strings"
+)
 
 // Profile selects registrations for one process role. An empty Include list
 // means all entries are eligible. Exclude always wins over Include.
@@ -34,29 +38,51 @@ func matchesAny(name string, patterns []string) bool {
 }
 
 func resolveProfile(r *Registry, name string) (Profile, error) {
+	profiles := make(map[string]Profile)
+	if r != nil {
+		for _, entry := range r.Entries() {
+			if profile, ok := asProfile(entry.Value); ok {
+				profiles[entry.Name] = profile
+			}
+		}
+	}
+	return resolveProfiles(profiles, name)
+}
+
+// resolveProfiles expands parent Profiles references and detects cycles before
+// a profile is used to filter registrations.
+func resolveProfiles(profiles map[string]Profile, name string) (Profile, error) {
+	name = strings.TrimSpace(name)
 	if name == "" {
 		return Profile{}, nil
 	}
-	v, ok := r.Lookup(name)
+	return resolveProfileName(profiles, name, make(map[string]bool))
+}
+
+func resolveProfileName(profiles map[string]Profile, name string, visiting map[string]bool) (Profile, error) {
+	if visiting[name] {
+		return Profile{}, fmt.Errorf("dubi: profile inheritance cycle at %q", name)
+	}
+	p, ok := profiles[name]
 	if !ok {
 		return Profile{}, &NotFoundError{Kind: "profile", Name: name}
 	}
-	p, ok := v.(Profile)
-	if !ok {
-		if pp, ok := v.(*Profile); ok && pp != nil {
-			p = *pp
-		} else {
-			return Profile{}, &TypeError{Name: name, Want: "dubi.Profile", Got: v}
+	visiting[name] = true
+	defer delete(visiting, name)
+	parents := append([]string(nil), p.Profiles...)
+	resolved := Profile{}
+	for _, parent := range parents {
+		parent = strings.TrimSpace(parent)
+		if parent == "" {
+			continue
 		}
-	}
-	for _, parent := range p.Profiles {
-		base, err := resolveProfile(r, parent)
+		base, err := resolveProfileName(profiles, parent, visiting)
 		if err != nil {
 			return Profile{}, err
 		}
-		p = mergeProfiles(base, p)
+		resolved = mergeProfiles(resolved, base)
 	}
-	return p, nil
+	return mergeProfiles(resolved, p), nil
 }
 
 func mergeProfiles(base Profile, overlays ...Profile) Profile {
