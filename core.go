@@ -35,25 +35,21 @@ type Service struct {
 
 func (Service) Scope() string { return "core:service" }
 
-type coreModule struct{}
-
-type coreInstance struct {
+type coreModule struct {
 	methods  map[string]Method
 	services map[string]Service
 }
 
+var core = &coreModule{
+	methods:  make(map[string]Method),
+	services: make(map[string]Service),
+}
+
 func init() {
-	Mount(&coreModule{})
+	Mount(core)
 }
 
-func (*coreModule) New() Instance {
-	return &coreInstance{
-		methods:  make(map[string]Method),
-		services: make(map[string]Service),
-	}
-}
-
-func (c *coreInstance) Register(name string, value any) {
+func (c *coreModule) Register(name string, value any) {
 	switch item := value.(type) {
 	case Method:
 		c.methods[name] = item
@@ -70,12 +66,17 @@ func (c *coreInstance) Register(name string, value any) {
 	}
 }
 
-func (*coreInstance) Config(Map) error     { return nil }
-func (*coreInstance) Setup(*Context) error { return nil }
-func (*coreInstance) Open(*Context) error  { return nil }
-func (*coreInstance) Start(*Context) error { return nil }
-func (*coreInstance) Stop(*Context) error  { return nil }
-func (*coreInstance) Close(*Context) error { return nil }
+func (c *coreModule) Reset() {
+	c.methods = make(map[string]Method)
+	c.services = make(map[string]Service)
+}
+
+func (*coreModule) Config(Map) error     { return nil }
+func (*coreModule) Setup(*Context) error { return nil }
+func (*coreModule) Open(*Context) error  { return nil }
+func (*coreModule) Start(*Context) error { return nil }
+func (*coreModule) Stop(*Context) error  { return nil }
+func (*coreModule) Close(*Context) error { return nil }
 
 // Invoke calls a local Method or Service on the Runtime.
 func (rt *Runtime) Invoke(meta *Meta, name string, value Map) (Map, Res) {
@@ -106,24 +107,18 @@ func Execute(name string, values ...Map) (Map, Res) {
 }
 
 func invokeRuntime(meta *Meta, name string, value Map, methodOnly bool) (Map, Res) {
-	if meta != nil && meta.runtime != nil {
-		if methodOnly {
-			return meta.runtime.Execute(meta, name, value)
-		}
-		return meta.runtime.Invoke(meta, name, value)
-	}
+	rt := DefaultRuntime()
 	if methodOnly {
-		return Execute(name, value)
+		return rt.invoke(meta, name, value, true)
 	}
-	return Invoke(name, value)
+	return rt.invoke(meta, name, value, false)
 }
 
 func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (Map, Res) {
 	if meta == nil {
-		meta = NewMeta(rt)
+		meta = NewMeta()
 	}
-	meta.runtime = rt
-	if rt == nil || rt.core == nil {
+	if rt == nil || core == nil {
 		return nil, ResultOf(1, "runtime is not ready")
 	}
 
@@ -131,13 +126,13 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (
 	var setting Map
 	var dataDefinition Vars
 	var config any
-	if method, ok := rt.core.methods[name]; ok {
+	if method, ok := core.methods[name]; ok {
 		action = method
 		setting = method.Setting
 		dataDefinition = method.Data
 		config = method
 	} else if !methodOnly {
-		if service, ok := rt.core.services[name]; ok {
+		if service, ok := core.services[name]; ok {
 			action = Method{
 				Name:     service.Name,
 				Desc:     service.Desc,
@@ -160,7 +155,6 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (
 	ctx := &Context{
 		Context: meta.Context(),
 		Meta:    meta,
-		Runtime: rt,
 		Name:    name,
 		Config:  config,
 		Setting: setting.Clone(),

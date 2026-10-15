@@ -10,7 +10,7 @@ import (
 )
 
 func TestRunLoadingInvokesMethodAndStoresLocals(t *testing.T) {
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("user.get", dubi.Method{Action: func(ctx *dubi.Context) Map {
 		return Map{"id": ctx.Args["id"], "name": "alice"}
 	}})
@@ -20,7 +20,7 @@ func TestRunLoadingInvokesMethodAndStoresLocals(t *testing.T) {
 	defer rt.Close(context.Background())
 
 	ctx := &Context{
-		Meta:  dubi.NewMeta(rt),
+		Meta:  dubi.NewMeta(),
 		Value: Map{"id": "u-1"},
 		Args:  Map{"id": "u-1"},
 	}
@@ -81,7 +81,7 @@ func TestDefaultHTTPOutcomeResults(t *testing.T) {
 	}
 	for _, item := range tests {
 		t.Run(item.name, func(t *testing.T) {
-			ctx := &Context{Meta: dubi.NewMeta(), runtime: dubi.DefaultRuntime()}
+			ctx := &Context{Meta: dubi.NewMeta()}
 			item.call(ctx)
 			if ctx.Code != item.code || ctx.Result() == nil || ctx.Result().Code() != 1 || ctx.Result().Status() != item.status || ctx.Body != item.text {
 				t.Fatalf("outcome = code:%d result:%v body:%q", ctx.Code, ctx.Result(), ctx.Body)
@@ -90,10 +90,10 @@ func TestDefaultHTTPOutcomeResults(t *testing.T) {
 	}
 }
 
-func TestNewContextUsesDefaultRuntime(t *testing.T) {
+func TestNewContextUsesProcessCapabilities(t *testing.T) {
 	request := httptest.NewRequest("GET", "http://example.test/", nil)
-	ctx := NewContext(nil, httptest.NewRecorder(), request)
-	if ctx.runtime != dubi.DefaultRuntime() || ctx.Meta == nil {
+	ctx := NewContext(httptest.NewRecorder(), request)
+	if ctx.Meta == nil {
 		t.Fatal("context did not bind the default Runtime")
 	}
 	if got := ctx.String("notfound"); got != "Not Found" {

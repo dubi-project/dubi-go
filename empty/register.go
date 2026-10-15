@@ -1,7 +1,7 @@
 package empty
 
-// Register receives selected Registry entries from the dubi Runtime.
-func (i *Instance) Register(name string, value any) {
+// Register receives selected Registry entries from the process registry.
+func (i *Module) Register(name string, value any) {
 	switch item := value.(type) {
 	case Filter:
 		i.RegisterFilter(name, item)

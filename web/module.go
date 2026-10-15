@@ -24,47 +24,76 @@ import (
 	. "github.com/dubi-project/dubi-go/base"
 )
 
-var module = &Module{}
+// Module is the process-level HTTP module. It owns one set of configuration
+// and registrations for the process.
+type Module struct {
+	mu sync.RWMutex
 
-func init() {
-	dubi.Mount(module)
+	enabled      bool
+	config       Config
+	servers      map[string]ServerConfig
+	routers      map[string]Router
+	filters      map[string]Filter
+	handlers     map[string]Handler
+	serverStates map[string]*serverState
 }
 
-// Module is mounted once by the web package and creates isolated state for
-// every dubi Runtime.
-type Module struct{}
+var (
+	module = &Module{
+		servers:      make(map[string]ServerConfig),
+		routers:      make(map[string]Router),
+		filters:      make(map[string]Filter),
+		handlers:     make(map[string]Handler),
+		serverStates: make(map[string]*serverState),
+	}
+	host dubi.Host
+)
+
+func init() {
+	host = dubi.Mount(module)
+}
 
 var _ dubi.Module = (*Module)(nil)
 
-// Instance owns one Runtime's HTTP configuration and registrations.
-type Instance struct {
-	mu sync.RWMutex
-
-	enabled        bool
-	config         Config
-	servers        map[string]ServerConfig
-	routers        map[string]Router
-	filters        map[string]Filter
-	handlers       map[string]Handler
-	runtimeServers map[string]*serverRuntime
-}
-
-var _ dubi.Instance = (*Instance)(nil)
-
-func (*Module) New() dubi.Instance {
-	return &Instance{
-		servers:        make(map[string]ServerConfig),
-		routers:        make(map[string]Router),
-		filters:        make(map[string]Filter),
-		handlers:       make(map[string]Handler),
-		runtimeServers: make(map[string]*serverRuntime),
+func (i *Module) initMaps() {
+	if i.servers == nil {
+		i.servers = make(map[string]ServerConfig)
+	}
+	if i.routers == nil {
+		i.routers = make(map[string]Router)
+	}
+	if i.filters == nil {
+		i.filters = make(map[string]Filter)
+	}
+	if i.handlers == nil {
+		i.handlers = make(map[string]Handler)
+	}
+	if i.serverStates == nil {
+		i.serverStates = make(map[string]*serverState)
 	}
 }
 
-// Config loads the HTTP section before registrations are delivered.
-func (i *Instance) Config(global Map) error {
+// Reset clears process module state for the deprecated test constructor.
+func (i *Module) Reset() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	for _, server := range i.serverStates {
+		_ = server.close(context.Background())
+	}
+	i.enabled = false
+	i.config = Config{}
+	i.servers = make(map[string]ServerConfig)
+	i.routers = make(map[string]Router)
+	i.filters = make(map[string]Filter)
+	i.handlers = make(map[string]Handler)
+	i.serverStates = make(map[string]*serverState)
+}
+
+// Config loads the HTTP section before registrations are delivered.
+func (i *Module) Config(global Map) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.initMaps()
 	value, ok := global["web"]
 	if !ok {
 		return nil
@@ -83,10 +112,11 @@ func (i *Instance) Config(global Map) error {
 	return nil
 }
 
-// Register receives the selected dynamic components from the Runtime.
-func (i *Instance) Register(name string, value any) {
+// Register receives the selected dynamic components from the process registry.
+func (i *Module) Register(name string, value any) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.initMaps()
 	switch item := value.(type) {
 	case Router:
 		i.routers[name] = item
@@ -115,7 +145,7 @@ func (i *Instance) Register(name string, value any) {
 	}
 }
 
-func (i *Instance) Setup(hostContext *dubi.Context) error {
+func (i *Module) Setup(hostContext *dubi.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if !i.enabled {
@@ -127,30 +157,30 @@ func (i *Instance) Setup(hostContext *dubi.Context) error {
 	if err := validateServers(i.servers); err != nil {
 		return err
 	}
-	i.runtimeServers = make(map[string]*serverRuntime, len(i.servers))
+	i.serverStates = make(map[string]*serverState, len(i.servers))
 	serverNames := make(map[string]struct{}, len(i.servers))
 	for _, name := range sortedKeys(i.servers) {
 		serverNames[name] = struct{}{}
 	}
 	for _, name := range sortedKeys(i.servers) {
 		config := i.servers[name]
-		server := newServerRuntime(config, hostContext.Runtime, serverNames)
+		server := newServerState(config, serverNames)
 		if err := server.register(i.routers, i.filters, i.handlers); err != nil {
 			return fmt.Errorf("web server %q: %w", name, err)
 		}
-		i.runtimeServers[name] = server
+		i.serverStates[name] = server
 	}
 	return nil
 }
 
 // Open creates every configured listener. A partial open is rolled back when
 // any listener cannot bind its address.
-func (i *Instance) Open(*dubi.Context) error {
+func (i *Module) Open(*dubi.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	opened := make([]*serverRuntime, 0, len(i.runtimeServers))
-	for _, name := range sortedKeys(i.runtimeServers) {
-		server := i.runtimeServers[name]
+	opened := make([]*serverState, 0, len(i.serverStates))
+	for _, name := range sortedKeys(i.serverStates) {
+		server := i.serverStates[name]
 		if err := server.open(); err != nil {
 			for _, previous := range opened {
 				_ = previous.close(context.Background())
@@ -163,18 +193,18 @@ func (i *Instance) Open(*dubi.Context) error {
 }
 
 // Start serves every configured listener in its own goroutine.
-func (i *Instance) Start(*dubi.Context) error {
+func (i *Module) Start(*dubi.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	for _, name := range sortedKeys(i.runtimeServers) {
-		i.runtimeServers[name].start()
+	for _, name := range sortedKeys(i.serverStates) {
+		i.serverStates[name].start()
 	}
 	return nil
 }
 
-func (i *Instance) Stop(*dubi.Context) error { return nil }
+func (i *Module) Stop(*dubi.Context) error { return nil }
 
-func (i *Instance) Close(hostContext *dubi.Context) error {
+func (i *Module) Close(hostContext *dubi.Context) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	shutdownContext := context.Background()
@@ -182,8 +212,8 @@ func (i *Instance) Close(hostContext *dubi.Context) error {
 		shutdownContext = hostContext.Context
 	}
 	var first error
-	for _, name := range sortedKeys(i.runtimeServers) {
-		server := i.runtimeServers[name]
+	for _, name := range sortedKeys(i.serverStates) {
+		server := i.serverStates[name]
 		if err := server.close(shutdownContext); err != nil && first == nil {
 			first = fmt.Errorf("web server %q: %w", name, err)
 		}
@@ -191,8 +221,8 @@ func (i *Instance) Close(hostContext *dubi.Context) error {
 	return first
 }
 
-// ConfiguredServers returns a copy of the Runtime's resolved HTTP servers.
-func (i *Instance) ConfiguredServers() map[string]ServerConfig {
+// ConfiguredServers returns a copy of the process module's resolved HTTP servers.
+func (i *Module) ConfiguredServers() map[string]ServerConfig {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	result := make(map[string]ServerConfig, len(i.servers))
@@ -204,20 +234,20 @@ func (i *Instance) ConfiguredServers() map[string]ServerConfig {
 
 const defaultServerName = "default"
 
-type serverRuntime struct {
+type serverState struct {
 	config        ServerConfig
-	runtime       *dubi.Runtime
 	serverNames   map[string]struct{}
 	listener      net.Listener
 	server        *stdhttp.Server
 	started       bool
 	muxes         map[string]*stdhttp.ServeMux
+	pathMuxes     map[string]*stdhttp.ServeMux
+	pathPatterns  map[string]map[string]struct{}
 	filters       map[string][]Filter
 	handlers      map[string][]Handler
 	hasRoutes     bool
 	hasStatic     bool
 	pipelines     map[string]*sitePipeline
-	routeMethods  map[string]map[string]struct{}
 	routes        *routeRegistry
 	exactSites    map[string]string
 	wildcardSites []siteHostPattern
@@ -241,10 +271,11 @@ type corsPolicy struct {
 
 type sitePipeline struct {
 	mux           *stdhttp.ServeMux
+	pathMux       *stdhttp.ServeMux
 	staticRoot    string
 	staticRootAbs string
+	staticPrefix  string
 	setting       Map
-	routeMethods  map[string]struct{}
 	handlers      []Handler
 	chain         []func(*Context)
 	requestChain  []func(*Context)
@@ -253,13 +284,19 @@ type sitePipeline struct {
 	outcomes      map[string][]func(*Context)
 }
 
-func newServerRuntime(config ServerConfig, runtime *dubi.Runtime, serverNames map[string]struct{}) *serverRuntime {
+func newServerState(config ServerConfig, serverNames map[string]struct{}) *serverState {
 	muxes := make(map[string]*stdhttp.ServeMux)
+	pathMuxes := make(map[string]*stdhttp.ServeMux)
+	pathPatterns := make(map[string]map[string]struct{})
 	if len(config.Sites) == 0 {
 		muxes[""] = stdhttp.NewServeMux()
+		pathMuxes[""] = stdhttp.NewServeMux()
+		pathPatterns[""] = make(map[string]struct{})
 	} else {
 		for name := range config.Sites {
 			muxes[name] = stdhttp.NewServeMux()
+			pathMuxes[name] = stdhttp.NewServeMux()
+			pathPatterns[name] = make(map[string]struct{})
 		}
 	}
 	exactSites, wildcardSites := compileSiteHosts(config.Sites)
@@ -268,12 +305,12 @@ func newServerRuntime(config ServerConfig, runtime *dubi.Runtime, serverNames ma
 	for name, site := range config.Sites {
 		cors[name] = compileCORSPolicy(mergeMap(config.Cross, site.Cross))
 	}
-	return &serverRuntime{
-		config: config, runtime: runtime, serverNames: serverNames, muxes: muxes,
+	return &serverState{
+		config: config, serverNames: serverNames, muxes: muxes,
+		pathMuxes: pathMuxes, pathPatterns: pathPatterns,
 		filters: make(map[string][]Filter), handlers: make(map[string][]Handler),
 		hasStatic:     config.Static != "" || sitesHaveStatic(config.Sites),
 		pipelines:     make(map[string]*sitePipeline),
-		routeMethods:  make(map[string]map[string]struct{}),
 		routes:        newRouteRegistry(config),
 		exactSites:    exactSites,
 		wildcardSites: wildcardSites,
@@ -289,7 +326,7 @@ func newConcurrencyGate(limit int) chan struct{} {
 	return make(chan struct{}, limit)
 }
 
-func (s *serverRuntime) settingForSite(site string) Map {
+func (s *serverState) settingForSite(site string) Map {
 	setting := s.config.Setting.Clone()
 	if s.config.Compress {
 		if setting == nil {
@@ -303,8 +340,14 @@ func (s *serverRuntime) settingForSite(site string) Map {
 	return setting
 }
 
-func (s *serverRuntime) resolveClientIP(request *stdhttp.Request) string {
+func (s *serverState) resolveClientIP(request *stdhttp.Request) string {
+	if request == nil {
+		return ""
+	}
 	peer := requestPeerIP(request.RemoteAddr)
+	if len(s.config.TrustedProxies) == 0 {
+		return peer
+	}
 	if !s.isTrustedProxy(peer) {
 		return peer
 	}
@@ -328,7 +371,7 @@ func (s *serverRuntime) resolveClientIP(request *stdhttp.Request) string {
 	return peer
 }
 
-func (s *serverRuntime) isTrustedProxy(address string) bool {
+func (s *serverState) isTrustedProxy(address string) bool {
 	address = strings.TrimSpace(address)
 	parsed := net.ParseIP(address)
 	for _, pattern := range s.config.TrustedProxies {
@@ -346,7 +389,7 @@ func (s *serverRuntime) isTrustedProxy(address string) bool {
 	return false
 }
 
-func (s *serverRuntime) register(routers map[string]Router, filters map[string]Filter, handlers map[string]Handler) error {
+func (s *serverState) register(routers map[string]Router, filters map[string]Filter, handlers map[string]Handler) error {
 	for _, name := range sortedKeys(routers) {
 		router := routers[name]
 		compiledRouters := expandRouters(name, router)
@@ -373,27 +416,17 @@ func (s *serverRuntime) register(routers map[string]Router, filters map[string]F
 					if !exists {
 						continue
 					}
-					methods := s.routeMethods[site]
-					if methods == nil {
-						methods = make(map[string]struct{})
-						s.routeMethods[site] = methods
-					}
-					method := compiled.Method
-					if method == "" {
-						method = stdhttp.MethodGet
-					}
-					methods[method] = struct{}{}
 					baseSetting := s.settingForSite(site)
 					s.routes.add(name, compiledName, route, uri, site)
 					handler := compiled
 					routeSetting := mergeMap(baseSetting, handler.Setting)
 					var argumentPlan *dubi.MappingPlan
 					if len(handler.Args) > 0 {
-						argumentPlan = s.runtime.PrepareMapping(handler.Args)
+						argumentPlan = dubi.PrepareMapping(handler.Args)
 					}
 					var responsePlan *dubi.MappingPlan
 					if len(handler.Data) > 0 {
-						responsePlan = s.runtime.PrepareMapping(handler.Data)
+						responsePlan = dubi.PrepareMapping(handler.Data)
 					}
 					actions := append([]func(*Context){}, handler.Actions...)
 					if handler.Action != nil {
@@ -402,7 +435,6 @@ func (s *serverRuntime) register(routers map[string]Router, filters map[string]F
 					registeredPattern := pattern
 					pathParameters := compilePathParameters(uri)
 					registered := &routeHandler{
-						runtime: s.runtime,
 						serve: func(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 							request.Pattern = registeredPattern
 							ctx.Request = request
@@ -415,13 +447,17 @@ func (s *serverRuntime) register(routers map[string]Router, filters map[string]F
 							ctx.responsePlan = responsePlan
 							ctx.Params = resetMap(ctx.Params)
 							pathParamsInto(ctx.Params, request, pathParameters)
+							if !authorizeRouter(ctx, handler) {
+								runRouterOutcome(ctx, handler)
+								return
+							}
 							ctx.Query = resetMap(ctx.Query)
 							queryValuesInto(ctx.Query, request)
 							values := assignMap(ctx.Value, ctx.Params)
 							for key, value := range ctx.Query {
 								values[key] = value
 							}
-							form, files, err := requestFormValuesInto(request, s.runtime, ctx.Form)
+							form, files, err := requestFormValuesInto(request, ctx.Form)
 							if err != nil {
 								ctx.Failed(dubi.ErrorResult(err))
 								var tooLarge *stdhttp.MaxBytesError
@@ -439,7 +475,7 @@ func (s *serverRuntime) register(routers map[string]Router, filters map[string]F
 							ctx.Value = values
 							ctx.Args = assignMap(ctx.Args, values)
 							if len(handler.Args) > 0 {
-								args, result := s.runtime.ApplyMapping(argumentPlan, values)
+								args, result := dubi.ApplyMapping(argumentPlan, values)
 								if result != nil && result.Fail() {
 									ctx.Failed(result)
 									runRouterOutcome(ctx, handler)
@@ -462,6 +498,15 @@ func (s *serverRuntime) register(routers map[string]Router, filters map[string]F
 					}
 					if err := registerHandler(mux, registeredPattern, registered); err != nil {
 						return fmt.Errorf("web route %q: %w", compiledName, err)
+					}
+					// Keep a methodless path index for fast 404/405 detection.
+					// Path conflicts are harmless here: any matching path is
+					// enough to distinguish a method mismatch from a 404.
+					if patterns := s.pathPatterns[site]; patterns != nil {
+						if _, exists := patterns[uri]; !exists {
+							patterns[uri] = struct{}{}
+							_ = registerHandler(s.pathMuxes[site], uri, stdhttp.NotFoundHandler())
+						}
 					}
 					s.hasRoutes = true
 				}
@@ -507,14 +552,13 @@ func registerHandler(mux *stdhttp.ServeMux, pattern string, handler stdhttp.Hand
 // Web pipeline pass its already-acquired Context without a request context
 // allocation on every request.
 type routeHandler struct {
-	runtime *dubi.Runtime
-	serve   func(*Context, stdhttp.ResponseWriter, *stdhttp.Request)
+	serve func(*Context, stdhttp.ResponseWriter, *stdhttp.Request)
 }
 
 func (h *routeHandler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 	ctx, _ := request.Context().Value(httpContextKey{}).(*Context)
 	if ctx == nil {
-		ctx = NewContext(h.runtime, writer, request)
+		ctx = NewContext(writer, request)
 	}
 	h.ServeContext(ctx, writer, request)
 }
@@ -540,9 +584,9 @@ func sortedKeys[T any](values map[string]T) []string {
 }
 
 // compilePipelines moves the stable part of request dispatch out of the hot
-// path. A Runtime is configured once, while its request Context is created for
-// each request.
-func (s *serverRuntime) compilePipelines() {
+// path. The process module is configured once, while its request Context is
+// created for each request.
+func (s *serverState) compilePipelines() {
 	for site, mux := range s.muxes {
 		items := append([]Filter{}, s.filters[""]...)
 		if site != "" {
@@ -553,15 +597,18 @@ func (s *serverRuntime) compilePipelines() {
 			staticRoot = s.config.Sites[site].Static
 		}
 		staticRootAbs := ""
+		staticPrefix := ""
 		if staticRoot != "" {
 			staticRootAbs, _ = filepath.Abs(staticRoot)
+			staticPrefix = staticRootAbs + string(filepath.Separator)
 		}
 		p := &sitePipeline{
 			mux:           mux,
+			pathMux:       s.pathMuxes[site],
 			staticRoot:    staticRoot,
 			staticRootAbs: staticRootAbs,
+			staticPrefix:  staticPrefix,
 			setting:       s.settingForSite(site),
-			routeMethods:  s.routeMethods[site],
 			handlers:      append([]Handler{}, s.handlers[""]...),
 			outcomes:      make(map[string][]func(*Context)),
 		}
@@ -649,21 +696,11 @@ func (s *serverRuntime) compilePipelines() {
 }
 
 func (p *sitePipeline) hasPathRoute(request *stdhttp.Request) bool {
-	if p == nil || len(p.routeMethods) == 0 {
+	if p == nil || p.pathMux == nil {
 		return false
 	}
-	originalMethod := request.Method
-	defer func() { request.Method = originalMethod }()
-	for method := range p.routeMethods {
-		if method == originalMethod {
-			continue
-		}
-		request.Method = method
-		if _, pattern := p.mux.Handler(request); pattern != "" {
-			return true
-		}
-	}
-	return false
+	_, pattern := p.pathMux.Handler(request)
+	return pattern != ""
 }
 
 func (p *sitePipeline) serveStatic(ctx *Context) bool {
@@ -676,7 +713,7 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 		clean = "/index.html"
 	}
 	fileAbs := filepath.Join(root, clean)
-	if fileAbs != root && !strings.HasPrefix(fileAbs, root+string(filepath.Separator)) {
+	if root != string(filepath.Separator) && fileAbs != root && !strings.HasPrefix(fileAbs, p.staticPrefix) {
 		return false
 	}
 	info, err := os.Stat(fileAbs)
@@ -690,11 +727,11 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 	return true
 }
 
-func requestFormValues(request *stdhttp.Request, runtime *dubi.Runtime) (Map, map[string][]*multipart.FileHeader, error) {
-	return requestFormValuesInto(request, runtime, Map{})
+func requestFormValues(request *stdhttp.Request) (Map, map[string][]*multipart.FileHeader, error) {
+	return requestFormValuesInto(request, Map{})
 }
 
-func requestFormValuesInto(request *stdhttp.Request, runtime *dubi.Runtime, result Map) (Map, map[string][]*multipart.FileHeader, error) {
+func requestFormValuesInto(request *stdhttp.Request, result Map) (Map, map[string][]*multipart.FileHeader, error) {
 	result = resetMap(result)
 	if request.Body == nil || request.Body == stdhttp.NoBody || request.ContentLength == 0 || request.Method == stdhttp.MethodGet || request.Method == stdhttp.MethodHead {
 		return result, nil, nil
@@ -715,7 +752,7 @@ func requestFormValuesInto(request *stdhttp.Request, runtime *dubi.Runtime, resu
 		if len(bytes.TrimSpace(body)) == 0 {
 			return result, files, nil
 		}
-		value, err := runtime.Decode("json", body, nil)
+		value, err := dubi.Decode("json", body, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -782,7 +819,7 @@ func configHasStatic(servers map[string]ServerConfig, sites map[string]SiteConfi
 	return false
 }
 
-func (s *serverRuntime) open() error {
+func (s *serverState) open() error {
 	host := s.config.Host
 	if host == "" {
 		host = "0.0.0.0"
@@ -818,7 +855,7 @@ func (s *serverRuntime) open() error {
 	return nil
 }
 
-func (s *serverRuntime) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 	var ctx *Context
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -872,7 +909,7 @@ func (s *serverRuntime) serveHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 		matchedPattern = pattern
 		if pattern == "" && !p.hasPathRoute(request) {
 			if s.hasStatic {
-				ctx = acquireContext(s.runtime, writer, request)
+				ctx = acquireContext(writer, request)
 				ctx.Site = site
 				ctx.Server = s.config.Name
 				ctx.Setting = assignMap(ctx.Setting, p.setting)
@@ -889,7 +926,7 @@ func (s *serverRuntime) serveHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 	if noPipeline && matchedHandler == nil {
 		matchedHandler, matchedPattern = p.mux.Handler(request)
 	}
-	ctx = acquireContext(s.runtime, writer, request)
+	ctx = acquireContext(writer, request)
 	ctx.Site = site
 	ctx.Server = s.config.Name
 	ctx.RemoteIP = s.resolveClientIP(request)
@@ -921,7 +958,7 @@ func (s *serverRuntime) serveHTTP(writer stdhttp.ResponseWriter, request *stdhtt
 	p.finish(ctx)
 }
 
-func (s *serverRuntime) recoverPanic(writer stdhttp.ResponseWriter, ctx *Context, recovered any) {
+func (s *serverState) recoverPanic(writer stdhttp.ResponseWriter, ctx *Context, recovered any) {
 	log.Printf("web: recovered panic: %v", recovered)
 	if ctx == nil {
 		stdhttp.Error(writer, stdhttp.StatusText(stdhttp.StatusInternalServerError), stdhttp.StatusInternalServerError)
@@ -953,7 +990,7 @@ func (s *serverRuntime) recoverPanic(writer stdhttp.ResponseWriter, ctx *Context
 	}
 }
 
-func (s *serverRuntime) applyCORS(writer stdhttp.ResponseWriter, request *stdhttp.Request, site string) bool {
+func (s *serverState) applyCORS(writer stdhttp.ResponseWriter, request *stdhttp.Request, site string) bool {
 	policy, ok := s.cors[site]
 	if !ok || !policy.allow {
 		return false
@@ -1062,6 +1099,50 @@ func runRouterOutcome(ctx *Context, router Router) {
 	handler(ctx)
 }
 
+func authorizeRouter(ctx *Context, router Router) bool {
+	raw := requestToken(ctx)
+	if raw != "" {
+		if _, err := ctx.VerifyToken(raw); err != nil {
+			if router.Sign {
+				ctx.Unsigned()
+			} else if router.Auth {
+				ctx.Unauthed()
+			}
+			return !router.Sign && !router.Auth
+		}
+	}
+	if router.Sign && !ctx.Signed() {
+		ctx.Unsigned()
+		return false
+	}
+	if router.Auth && !ctx.Authed() {
+		ctx.Unauthed()
+		return false
+	}
+	if (router.Sign || router.Auth) && router.Kind != "" && ctx.Kind() != router.Kind {
+		ctx.Denied()
+		return false
+	}
+	return true
+}
+
+func requestToken(ctx *Context) string {
+	if ctx == nil || ctx.Request == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(ctx.Request.Header.Get("Authorization")); value != "" {
+		parts := strings.Fields(value)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			return parts[1]
+		}
+		return value
+	}
+	if cookie, err := ctx.Request.Cookie(dubi.AuthCookieName()); err == nil {
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
+}
+
 func runChain(ctx *Context, chain []func(*Context)) {
 	previousNexts, previousIndex := ctx.nexts, ctx.index
 	ctx.nexts, ctx.index = chain, 0
@@ -1069,7 +1150,7 @@ func runChain(ctx *Context, chain []func(*Context)) {
 	ctx.nexts, ctx.index = previousNexts, previousIndex
 }
 
-func (s *serverRuntime) start() {
+func (s *serverState) start() {
 	if s.listener == nil || s.server == nil {
 		return
 	}
@@ -1077,7 +1158,7 @@ func (s *serverRuntime) start() {
 	go func() { _ = s.server.Serve(s.listener) }()
 }
 
-func (s *serverRuntime) close(parent context.Context) error {
+func (s *serverState) close(parent context.Context) error {
 	if s.server != nil {
 		var err error
 		if s.started {
@@ -1208,7 +1289,7 @@ func normalizeHostPattern(raw string) string {
 	return strings.TrimSuffix(host, ".")
 }
 
-func (s *serverRuntime) siteForHost(rawHost string) (string, bool) {
+func (s *serverState) siteForHost(rawHost string) (string, bool) {
 	if len(s.config.Sites) == 0 {
 		return "", true
 	}

@@ -50,18 +50,40 @@ type Mime []string
 
 func (Mime) Scope() string { return "basic:mime" }
 
-type basicModule struct{}
-
-type basicInstance struct {
+type basicModule struct {
 	types     map[string]Type
 	statuses  Statuses
 	languages map[string]Language
 	mimes     map[string]Mime
-	codec     *codecInstance
+}
+
+var basic = &basicModule{
+	types:     make(map[string]Type),
+	statuses:  make(Statuses),
+	languages: make(map[string]Language),
+	mimes:     make(map[string]Mime),
 }
 
 func init() {
-	Mount(&basicModule{})
+	for name, config := range builtinTypes() {
+		basic.types[name] = config
+	}
+	for name, values := range builtinMimes() {
+		basic.mimes[name] = values
+	}
+	statusCatalog.RLock()
+	for name, code := range statusCatalog.statuses {
+		basic.statuses[name] = code
+	}
+	if len(statusCatalog.texts) > 0 {
+		strings := base.Map{}
+		for name, text := range statusCatalog.texts {
+			strings[name] = text
+		}
+		basic.languages["default"] = Language{Name: "default", Strings: strings}
+	}
+	statusCatalog.RUnlock()
+	Mount(basic)
 }
 
 var statusCatalog = struct {
@@ -73,35 +95,7 @@ var statusCatalog = struct {
 	texts:    make(map[string]string),
 }
 
-func (*basicModule) New() Instance {
-	instance := &basicInstance{
-		types:     make(map[string]Type),
-		statuses:  make(Statuses),
-		languages: make(map[string]Language),
-		mimes:     make(map[string]Mime),
-	}
-	for name, config := range builtinTypes() {
-		instance.types[name] = config
-	}
-	for name, values := range builtinMimes() {
-		instance.mimes[name] = values
-	}
-	statusCatalog.RLock()
-	for name, code := range statusCatalog.statuses {
-		instance.statuses[name] = code
-	}
-	if len(statusCatalog.texts) > 0 {
-		strings := base.Map{}
-		for name, text := range statusCatalog.texts {
-			strings[name] = text
-		}
-		instance.languages["default"] = Language{Name: "default", Strings: strings}
-	}
-	statusCatalog.RUnlock()
-	return instance
-}
-
-func (b *basicInstance) Register(name string, value any) {
+func (b *basicModule) Register(name string, value any) {
 	switch item := value.(type) {
 	case Type:
 		b.registerType(name, item)
@@ -128,7 +122,25 @@ func (b *basicInstance) Register(name string, value any) {
 	}
 }
 
-func (b *basicInstance) registerType(name string, item Type) {
+func (b *basicModule) Reset() {
+	b.types = builtinTypes()
+	b.statuses = make(Statuses)
+	b.languages = make(map[string]Language)
+	b.mimes = builtinMimes()
+	statusCatalog.RLock()
+	for name, code := range statusCatalog.statuses {
+		b.statuses[name] = code
+	}
+	for name, text := range statusCatalog.texts {
+		if b.languages["default"].Strings == nil {
+			b.languages["default"] = Language{Name: "default", Strings: base.Map{}}
+		}
+		b.languages["default"].Strings[name] = text
+	}
+	statusCatalog.RUnlock()
+}
+
+func (b *basicModule) registerType(name string, item Type) {
 	if item.Name == "" {
 		item.Name = name
 	}
@@ -140,12 +152,12 @@ func (b *basicInstance) registerType(name string, item Type) {
 	}
 }
 
-func (*basicInstance) Config(base.Map) error { return nil }
-func (*basicInstance) Setup(*Context) error  { return nil }
-func (*basicInstance) Open(*Context) error   { return nil }
-func (*basicInstance) Start(*Context) error  { return nil }
-func (*basicInstance) Stop(*Context) error   { return nil }
-func (*basicInstance) Close(*Context) error  { return nil }
+func (*basicModule) Config(base.Map) error { return nil }
+func (*basicModule) Setup(*Context) error  { return nil }
+func (*basicModule) Open(*Context) error   { return nil }
+func (*basicModule) Start(*Context) error  { return nil }
+func (*basicModule) Stop(*Context) error   { return nil }
+func (*basicModule) Close(*Context) error  { return nil }
 
 // Mapping validates and converts data according to base.Vars.
 func (rt *Runtime) Mapping(config base.Vars, data base.Map, values ...base.Map) (base.Map, base.Res) {
@@ -153,7 +165,7 @@ func (rt *Runtime) Mapping(config base.Vars, data base.Map, values ...base.Map) 
 	if len(values) > 0 && values[0] != nil {
 		out = values[0]
 	}
-	instance := rt.basicInstance()
+	instance := rt.basicModule()
 	return instance.mapping(config, data, out)
 }
 
@@ -182,7 +194,7 @@ func (rt *Runtime) ApplyMapping(plan *MappingPlan, data base.Map, values ...base
 	if len(values) > 0 && values[0] != nil {
 		out = values[0]
 	}
-	return rt.basicInstance().mappingPlan(plan.plan, data, out, "")
+	return rt.basicModule().mappingPlan(plan.plan, data, out, "")
 }
 
 // Mapping uses the default Runtime's basic type registry.
@@ -190,7 +202,18 @@ func Mapping(config base.Vars, data base.Map, values ...base.Map) (base.Map, bas
 	return DefaultRuntime().Mapping(config, data, values...)
 }
 
-func (b *basicInstance) mapping(config base.Vars, data base.Map, out base.Map) (base.Map, base.Res) {
+// PrepareMapping compiles a dynamic mapping definition using the process
+// registry. Mapping plans are safe to reuse for concurrent requests.
+func PrepareMapping(config base.Vars) *MappingPlan {
+	return DefaultRuntime().PrepareMapping(config)
+}
+
+// ApplyMapping applies a prepared process-level mapping plan.
+func ApplyMapping(plan *MappingPlan, data base.Map, values ...base.Map) (base.Map, base.Res) {
+	return DefaultRuntime().ApplyMapping(plan, data, values...)
+}
+
+func (b *basicModule) mapping(config base.Vars, data base.Map, out base.Map) (base.Map, base.Res) {
 	return b.mappingPlan(compileMappingPlan(config), data, out, "")
 }
 
@@ -221,7 +244,7 @@ func compileMappingPlan(config base.Vars) *mappingPlan {
 	return plan
 }
 
-func (b *basicInstance) mappingPlan(plan *mappingPlan, data base.Map, out base.Map, prefix string) (base.Map, base.Res) {
+func (b *basicModule) mappingPlan(plan *mappingPlan, data base.Map, out base.Map, prefix string) (base.Map, base.Res) {
 	if data == nil {
 		data = base.Map{}
 	}
@@ -406,7 +429,7 @@ func isStructuredMappingType(typeName string) bool {
 	return ok
 }
 
-func (b *basicInstance) mapChildren(plan *mappingPlan, value any, path string, custom any) (any, base.Res) {
+func (b *basicModule) mapChildren(plan *mappingPlan, value any, path string, custom any) (any, base.Res) {
 	raw := reflect.ValueOf(value)
 	if raw.IsValid() && (raw.Kind() == reflect.Slice || raw.Kind() == reflect.Array) {
 		result := make([]any, 0, raw.Len())
@@ -462,7 +485,7 @@ func lookupValue(data base.Map, name string, aliases []string) (any, bool) {
 	return nil, false
 }
 
-func (b *basicInstance) convert(typeName string, value any, definition base.Var) (any, error) {
+func (b *basicModule) convert(typeName string, value any, definition base.Var) (any, error) {
 	if definition.Value != nil {
 		return value, nil
 	}
@@ -558,19 +581,11 @@ func mappingArrayElementType(typeName string) (string, bool) {
 	return "", false
 }
 
-func (b *basicInstance) decode(name string, value any) (any, error) {
-	codec := b.codec
-	if codec == nil {
-		codec = codecForRuntime(nil)
-	}
+func (b *basicModule) decode(name string, value any) (any, error) {
 	return codec.decode(name, value, nil)
 }
 
-func (b *basicInstance) encode(name string, value any) (any, error) {
-	codec := b.codec
-	if codec == nil {
-		codec = codecForRuntime(nil)
-	}
+func (b *basicModule) encode(name string, value any) (any, error) {
 	return codec.encode(name, value)
 }
 
@@ -614,19 +629,11 @@ func normalizeBasicValue(value any) any {
 	}
 }
 
-func (rt *Runtime) basicInstance() *basicInstance {
-	if rt != nil && rt.basic != nil {
-		return rt.basic
-	}
-	return defaultBasicInstance()
+func (rt *Runtime) basicModule() *basicModule {
+	return basic
 }
 
-var standaloneBasic = func() *basicInstance {
-	instance := (&basicModule{}).New().(*basicInstance)
-	return instance
-}()
-
-func defaultBasicInstance() *basicInstance { return standaloneBasic }
+func processBasic() *basicModule { return basic }
 
 func builtinTypes() map[string]Type {
 	return map[string]Type{
@@ -646,7 +653,7 @@ func builtinMimes() map[string]Mime {
 }
 
 func (rt *Runtime) Mimetype(ext string, defaults ...string) string {
-	b := rt.basicInstance()
+	b := rt.basicModule()
 	mimeExt := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(ext)), ".")
 	if strings.Contains(ext, "/") {
 		return ext
@@ -678,22 +685,22 @@ func registerStatus(key string, code Status, text string) {
 		statusCatalog.texts[strings.ReplaceAll(key, ".", "_")] = text
 	}
 	statusCatalog.Unlock()
-	if standaloneBasic != nil {
-		standaloneBasic.statuses[key] = code
+	if basic != nil {
+		basic.statuses[key] = code
 		if text != "" {
-			language := standaloneBasic.languages["default"]
+			language := basic.languages["default"]
 			if language.Strings == nil {
 				language.Strings = base.Map{}
 			}
 			language.Strings[strings.ReplaceAll(key, ".", "_")] = text
-			standaloneBasic.languages["default"] = language
+			basic.languages["default"] = language
 		}
 	}
 }
 
 // StatusCode returns the internal code registered for a status key.
 func (rt *Runtime) StatusCode(key string, defaults ...int) int {
-	if code, ok := rt.basicInstance().statuses[key]; ok {
+	if code, ok := rt.basicModule().statuses[key]; ok {
 		return int(code)
 	}
 	if len(defaults) > 0 {
@@ -709,7 +716,7 @@ func StatusCode(key string, defaults ...int) int {
 // Languages returns the Runtime's registered languages.
 func (rt *Runtime) Languages() map[string]Language {
 	result := map[string]Language{}
-	for name, language := range rt.basicInstance().languages {
+	for name, language := range rt.basicModule().languages {
 		copyOf := language
 		copyOf.Accepts = append([]string(nil), language.Accepts...)
 		copyOf.Strings = language.Strings.Clone()
@@ -726,7 +733,7 @@ func (rt *Runtime) DetectLanguage(header string, fallback ...string) string {
 		}
 		return ""
 	}
-	b := rt.basicInstance()
+	b := rt.basicModule()
 	for _, part := range strings.Split(header, ",") {
 		part = strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
 		if part == "" {
@@ -751,10 +758,10 @@ func (rt *Runtime) DetectLanguage(header string, fallback ...string) string {
 
 // String resolves one registered translation key.
 func (rt *Runtime) String(language, key string, args ...base.Any) string {
-	return rt.basicInstance().text(language, key, args...)
+	return rt.basicModule().text(language, key, args...)
 }
 
-func (b *basicInstance) text(language, key string, args ...base.Any) string {
+func (b *basicModule) text(language, key string, args ...base.Any) string {
 	key = strings.ReplaceAll(key, ".", "_")
 	text := key
 	if config, ok := b.languages[language]; ok {
@@ -778,4 +785,10 @@ func (b *basicInstance) text(language, key string, args ...base.Any) string {
 
 func String(language, key string, args ...base.Any) string {
 	return DefaultRuntime().String(language, key, args...)
+}
+
+// DetectLanguage resolves a request language using the process language
+// catalog.
+func DetectLanguage(header string, fallback ...string) string {
+	return DefaultRuntime().DetectLanguage(header, fallback...)
 }

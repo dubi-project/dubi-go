@@ -1,13 +1,13 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"log"
 
-	dubi "github.com/dubi-project/dubi-go"
+	"github.com/dubi-project/dubi-go"
 	. "github.com/dubi-project/dubi-go/base"
 	"github.com/dubi-project/dubi-go/empty"
-	dubiweb "github.com/dubi-project/dubi-go/web"
+	"github.com/dubi-project/dubi-go/web"
 )
 
 func init() {
@@ -21,7 +21,11 @@ func init() {
 	dubi.Register("queue.internal", "global queue.internal")
 	dubi.Register("debug.internal", "excluded from both profiles")
 	dubi.Register("user.get", dubi.Method{Action: func(ctx *dubi.Context) (Map, Res) {
-		return Map{"id": ctx.Args["id"], "request": ctx.Id()}, nil
+		return Map{
+			"id":      ctx.Args["id"],
+			"name":    "Ada Lovelace",
+			"request": ctx.Id(),
+		}, nil
 	}})
 	dubi.Register("mail.send", dubi.Service{Action: func(ctx *dubi.Context) Map {
 		return Map{"sent": ctx.Value["subject"]}
@@ -29,38 +33,53 @@ func init() {
 
 	// HTTP is a standard entry point. Router actions write HTTP responses
 	// directly; Method/Service calls remain optional business operations.
-	dubi.Register("*.access", dubiweb.Filter{
-		Serve: func(ctx *dubiweb.Context) {
+	dubi.Register("*.access", web.Filter{
+		Serve: func(ctx *web.Context) {
 			log.Printf("http request site=%s host=%s method=%s path=%s", ctx.Site, ctx.Host, ctx.Method, ctx.Path)
 			ctx.Next()
 		},
 	})
-	dubi.Register("*.errors", dubiweb.Handler{
-		NotFound: func(ctx *dubiweb.Context) {
+	dubi.Register("*.errors", web.Handler{
+		NotFound: func(ctx *web.Context) {
 			ctx.JSON(Map{"error": "not found", "path": ctx.Path}, 404)
 		},
-		Error: func(ctx *dubiweb.Context) {
+		Error: func(ctx *web.Context) {
 			ctx.JSON(Map{"error": "error", "path": ctx.Path, "err": ctx.Result()}, 500)
 		},
 	})
-	dubi.Register("www.index", dubiweb.Router{
+	dubi.Register("www.index", web.Router{
 		Uri: "/", Name: "asdff", Desc: "asdfadf",
-		Action: func(ctx *dubiweb.Context) {
-			ctx.JSON(Map{"site": ctx.Site, "host": ctx.Host, "message": "hello from www"})
-			ctx.Invoke("user.login.get", Map{"id": ctx.Args["id"]})
+		Action: func(ctx *web.Context) {
+			user := ctx.Invoke("user.get", Map{"id": "demo"})
+			ctx.Answer(dubi.OK, Map{
+				"site":    ctx.Site,
+				"host":    ctx.Host,
+				"message": "hello from www",
+				"user":    user,
+			})
 		},
 	})
-	dubi.Register("api.user", dubiweb.Router{
+	dubi.Register("api.user", web.Router{
 		Uri: "/users/{id}",
-		Routing: dubiweb.Routing{
+		Args: Vars{
+			"id": {Type: "string", Required: true},
+		},
+		Loading: web.Loading{
+			"user": {Invoke: "user.get", Value: "id", Required: true},
+		},
+		Data: Vars{
+			"id":   {Type: "string", Required: true},
+			"name": {Type: "string", Required: true},
+		},
+		Routing: web.Routing{
 			"GET": {
-				Action: func(ctx *dubiweb.Context) {
-					ctx.JSON(Map{"site": ctx.Site, "id": ctx.Params["id"]})
+				Action: func(ctx *web.Context) {
+					ctx.Answer(dubi.OK, ctx.Locals["user"].(Map))
 				},
 			},
 			"POST": {
 				Setting: Map{"operation": "create"},
-				Action: func(ctx *dubiweb.Context) {
+				Action: func(ctx *web.Context) {
 					ctx.JSON(Map{"site": ctx.Site, "operation": ctx.Setting["operation"]}, 201)
 				},
 			},
@@ -77,67 +96,22 @@ func init() {
 }
 
 func main() {
-	mode := flag.String("mode", "multi", "run mode: single or multi")
-	flag.Parse()
-
-	if *mode == "single" {
-		log.Println("starting one Runtime with profile web; press Ctrl-C to stop")
-		if err := dubi.Run("web"); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-
-	if err := runMultiple(); err != nil {
+	log.Println("starting the process runtime with profile web; press Ctrl-C to stop")
+	dubi.Configure(dubi.WithProfile("web"))
+	if err := dubi.Setup(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func runMultiple() error {
-	web := dubi.New()
-	web.Register("filter.local", empty.Filter{Name: "web-local"})
-	web.Register("user.local", "web local user")
-
-	worker := dubi.New()
-	worker.Register("handler.local", empty.Handler{Name: "worker-local"})
-	worker.Register("queue.local", "worker local queue")
-	worker.Register("local.codec", dubi.Codec{
-		Encode: func(value Any) (Any, error) {
-			return []byte("worker:" + value.(string)), nil
-		},
-	})
-	web.Register("local.codec", dubi.Codec{
-		Encode: func(value Any) (Any, error) {
-			return []byte("web:" + value.(string)), nil
-		},
-	})
-
-	if err := web.Run("web"); err != nil {
-		return err
+	printEntries("all", dubi.AllEntries())
+	printEntries("matched", dubi.Entries())
+	if err := dubi.Open(context.Background()); err != nil {
+		log.Fatal(err)
 	}
-	printEntries("web all", web.AllEntries())
-	printEntries("web matched", web.Entries())
-	meta := dubi.NewMeta(web)
-	log.Printf("user.get result: %#v", meta.Invoke("user.get", Map{"id": "u-1"}))
-	webCodec, err := meta.Marshal("local.codec", "value")
-	if err != nil {
-		return err
+	if err := dubi.Start(context.Background()); err != nil {
+		log.Fatal(err)
 	}
-	log.Printf("web local codec: %s", webCodec)
-	if err := worker.Run("worker"); err != nil {
-		return err
+	if err := dubi.Wait(); err != nil {
+		log.Fatal(err)
 	}
-	printEntries("worker all", worker.AllEntries())
-	printEntries("worker matched", worker.Entries())
-	meta = dubi.NewMeta(worker)
-	log.Printf("mail.send result: %#v", meta.Invoke("mail.send", Map{"subject": "welcome"}))
-	workerCodec, err := meta.Marshal("local.codec", "value")
-	if err != nil {
-		return err
-	}
-	log.Printf("worker local codec: %s", workerCodec)
-	log.Println("multiple Runtimes are running; press Ctrl-C to stop all")
-	return dubi.Wait()
 }
 
 func printEntries(label string, entries []dubi.Entry) {

@@ -21,14 +21,9 @@ const (
 	stateClosed
 )
 
-// Module is the process-level module definition. It is mounted once and
-// creates an isolated Instance for each Runtime.
+// Module is a process-level singleton module. It is mounted once and receives
+// the process lifecycle directly; there is no per-runtime instance.
 type Module interface {
-	New() Instance
-}
-
-// Instance owns one Runtime's registrations and lifecycle state.
-type Instance interface {
 	Register(string, any)
 	Config(Map) error
 	Setup(*Context) error
@@ -38,13 +33,13 @@ type Instance interface {
 	Close(*Context) error
 }
 
-// RuntimeOption configures one Runtime before its lifecycle starts.
+// RuntimeOption is retained as a compatibility hook for code that builds the
+// process runtime before Run. There is only one effective Runtime per process.
 type RuntimeOption func(*Runtime)
 
 type Context struct {
 	context.Context
 	*Meta
-	Runtime *Runtime
 	Name    string
 	Config  any
 	Setting Map
@@ -54,45 +49,92 @@ type Context struct {
 
 type Runtime struct {
 	mu           sync.Mutex
-	registry     *Registry
-	profiles     map[string]Profile
 	identity     Identity
 	nodeSet      bool
 	profileSet   bool
 	allEntries   []Entry
 	entries      []Entry
-	instances    []Instance
-	moduleNames  []string
-	core         *coreInstance
-	basic        *basicInstance
-	codec        *codecInstance
 	config       Map
 	configLoaded bool
 	bootstrap    Bootstrap
 	state        lifecycle
+	transition   string
 }
 
-func NewRuntime(options ...RuntimeOption) *Runtime {
+func newRuntime() *Runtime {
 	identity := defaultIdentity()
 	rt := &Runtime{
-		registry:   NewRegistry(),
-		profiles:   make(map[string]Profile),
 		config:     Map{},
 		identity:   identity,
 		bootstrap:  defaultBootstrap(),
 		nodeSet:    identity.Node != "",
 		profileSet: identity.Profile != "",
 	}
+	return rt
+}
+
+// resetRuntime resets the process singleton for Reset and embedded test hosts.
+func resetRuntime(rt *Runtime) {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	state := rt.state
+	transition := rt.transition
+	rt.mu.Unlock()
+	if transition != "" {
+		panic(fmt.Sprintf("dubi: reset called while %s is running", transition))
+	}
+	if state == stateStarted || state == stateOpen || state == stateSetup || state == stateStopped {
+		_ = rt.shutdown(context.Background())
+	}
+	// shutdown only closes modules. Clear the process wait state as well so a
+	// reset after Start cannot leave Wait observing the old runtime handle.
+	runtimeManager.remove(rt)
+	unfreezeModules()
+	for _, mounted := range globalModules() {
+		if resettable, ok := mounted.(interface{ Reset() }); ok {
+			resettable.Reset()
+		}
+	}
+	globalRegistry = NewRegistry()
+	fresh := newRuntime()
+	rt.mu.Lock()
+	rt.identity = fresh.identity
+	rt.nodeSet = fresh.nodeSet
+	rt.profileSet = fresh.profileSet
+	rt.allEntries = fresh.allEntries
+	rt.entries = fresh.entries
+	rt.config = fresh.config
+	rt.configLoaded = fresh.configLoaded
+	rt.bootstrap = fresh.bootstrap
+	rt.state = fresh.state
+	rt.transition = fresh.transition
+	rt.mu.Unlock()
+}
+
+// Configure applies process-level options before Run.
+func Configure(options ...RuntimeOption) {
+	rt := DefaultRuntime()
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.transition != "" {
+		panic(fmt.Sprintf("dubi: runtime is busy with %s", rt.transition))
+	}
+	if rt.state != stateNew {
+		panic("dubi: runtime is already prepared")
+	}
 	for _, option := range options {
 		if option != nil {
 			option(rt)
 		}
 	}
-	return rt
 }
 
-// New is the concise constructor used by applications.
-func New(options ...RuntimeOption) *Runtime { return NewRuntime(options...) }
+// Reset stops and clears the process singleton. It is intended for embedded
+// hosts that deliberately run the framework more than once in one process,
+// and for test isolation. Normal applications only call Run once.
+func Reset() { resetRuntime(DefaultRuntime()) }
 
 // Identity returns a copy of this Runtime's identity scope.
 func (rt *Runtime) Identity() Identity {
@@ -112,12 +154,16 @@ func (rt *Runtime) Endpoints() []string {
 	return append([]string(nil), rt.bootstrap.Endpoints...)
 }
 
+func Endpoints() []string { return DefaultRuntime().Endpoints() }
+
 // Auth returns a copy of the connection authentication settings.
 func (rt *Runtime) Auth() Map {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.bootstrap.Auth.Clone()
 }
+
+func Auth() Map { return DefaultRuntime().Auth() }
 
 // Run prepares and starts this Runtime, then returns. Process-level waiting is
 // provided by the package-level Run or Wait functions.
@@ -130,6 +176,11 @@ func (rt *Runtime) Run(profile ...string) error {
 		state := rt.state
 		rt.mu.Unlock()
 		return fmt.Errorf("dubi: run called in state %s", state)
+	}
+	if rt.transition != "" {
+		transition := rt.transition
+		rt.mu.Unlock()
+		return fmt.Errorf("dubi: run called while %s is running", transition)
 	}
 	if len(profile) == 1 {
 		rt.identity.Profile = strings.TrimSpace(profile[0])
@@ -162,14 +213,20 @@ func Run(profile ...string) error {
 // runtime.
 func (rt *Runtime) End() error {
 	err := rt.shutdown(context.Background())
-	runtimeManager.remove(rt)
+	if err == nil {
+		runtimeManager.remove(rt)
+	}
 	return err
 }
 
 func (rt *Runtime) shutdown(ctx context.Context) error {
 	rt.mu.Lock()
 	state := rt.state
+	transition := rt.transition
 	rt.mu.Unlock()
+	if transition != "" {
+		return fmt.Errorf("dubi: end called while %s is running", transition)
+	}
 
 	var first error
 	if state == stateStarted {
@@ -189,13 +246,25 @@ func (rt *Runtime) shutdown(ctx context.Context) error {
 // End closes the process-wide default runtime.
 func End() error { return DefaultRuntime().End() }
 
+// Setup, Open, Start, Stop, and Close expose the lifecycle for tests and
+// embedded tooling. Normal applications should use Run and End.
+func Setup(ctx context.Context) error { return DefaultRuntime().Setup(ctx) }
+func Open(ctx context.Context) error  { return DefaultRuntime().Open(ctx) }
+func Start(ctx context.Context) error { return DefaultRuntime().Start(ctx) }
+func Stop(ctx context.Context) error  { return DefaultRuntime().Stop(ctx) }
+func Close(ctx context.Context) error { return DefaultRuntime().Close(ctx) }
+
+func Entries() []Entry    { return DefaultRuntime().Entries() }
+func AllEntries() []Entry { return DefaultRuntime().AllEntries() }
+
 // DefaultRuntime returns the process-wide runtime. It is created lazily and
-// uses all global registrations unless a profile is selected.
+// uses all global registrations unless a profile is selected. The returned
+// handle is shared by the entire process.
 func DefaultRuntime() *Runtime {
 	defaultRuntimeMu.Lock()
 	defer defaultRuntimeMu.Unlock()
 	if defaultRuntime == nil {
-		defaultRuntime = NewRuntime()
+		defaultRuntime = newRuntime()
 	}
 	return defaultRuntime
 }
@@ -205,55 +274,99 @@ var (
 	defaultRuntime   *Runtime
 )
 
-// Register adds an instance-local component or Profile. It must happen before Setup.
+// Register adds a process registration through the compatibility Runtime
+// handle. It must happen before Setup; package-level Register is preferred.
 func (rt *Runtime) Register(name string, value any) {
+	// The process Registry is the source of truth and performs the setup-time
+	// freeze check. Avoid taking Runtime.mu here: a module callback may invoke
+	// this compatibility method while Setup is dispatching lifecycle hooks.
+	Register(name, value)
+}
+func (rt *Runtime) Entries() []Entry {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.state != stateNew {
-		panic("dubi: runtime is already prepared")
-	}
-	if profile, ok := asProfile(value); ok {
-		rt.profiles[normalizeName(name)] = profile
-		return
-	}
-	rt.registry.Register(name, value)
+	return append([]Entry(nil), rt.entries...)
 }
-func (rt *Runtime) Entries() []Entry { return append([]Entry(nil), rt.entries...) }
 
 // AllEntries returns all merged component entries before Profile filtering.
-func (rt *Runtime) AllEntries() []Entry { return append([]Entry(nil), rt.allEntries...) }
-
-func (rt *Runtime) Setup(ctx context.Context) error {
+func (rt *Runtime) AllEntries() []Entry {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.state != stateNew {
-		return fmt.Errorf("dubi: setup called in state %s", rt.state)
+	return append([]Entry(nil), rt.allEntries...)
+}
+
+func (rt *Runtime) beginLifecycle(action string, expected ...lifecycle) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.transition != "" {
+		return fmt.Errorf("dubi: %s called while %s is running", action, rt.transition)
 	}
+	for _, state := range expected {
+		if rt.state == state {
+			rt.transition = action
+			return nil
+		}
+	}
+	return fmt.Errorf("dubi: %s called in state %s", action, rt.state)
+}
+
+func (rt *Runtime) lifecycleTransition() string {
+	rt.mu.Lock()
+	transition := rt.transition
+	rt.mu.Unlock()
+	return transition
+}
+
+func (rt *Runtime) finishLifecycle(state lifecycle) {
+	rt.mu.Lock()
+	rt.state = state
+	rt.transition = ""
+	rt.mu.Unlock()
+}
+
+func (rt *Runtime) resetLifecycle(state lifecycle) {
+	rt.finishLifecycle(state)
+}
+
+func (rt *Runtime) Setup(ctx context.Context) error {
+	if err := rt.beginLifecycle("setup", stateNew); err != nil {
+		return err
+	}
+	setupOK := false
+	defer func() {
+		if !setupOK {
+			globalRegistry.unfreeze()
+			unfreezeModules()
+			rt.resetLifecycle(stateNew)
+		}
+	}()
+	rt.mu.Lock()
 	if !rt.configLoaded {
 		if err := rt.loadConfig(); err != nil {
+			rt.mu.Unlock()
 			return err
 		}
 	}
+	config := rt.config.Clone()
+	profileName := rt.identity.Profile
+	rt.mu.Unlock()
 	merged := make(map[string]any)
 	profiles := make(map[string]Profile)
-	for _, entry := range globalRegistry.Entries() {
+	registered := globalRegistry.Entries()
+	globalRegistry.Freeze()
+	freezeModules()
+	for _, entry := range registered {
 		if profile, ok := asProfile(entry.Value); ok {
 			profiles[entry.Name] = profile
 			continue
 		}
 		merged[entry.Name] = entry.Value
 	}
-	for _, entry := range rt.registry.Entries() {
-		merged[entry.Name] = entry.Value
-	}
-	configured, err := configuredProfiles(rt.config)
+	configured, err := configuredProfiles(config)
 	if err != nil {
 		return fmt.Errorf("dubi: load profiles: %w", err)
 	}
 	for name, profile := range configured {
-		profiles[name] = profile
-	}
-	for name, profile := range rt.profiles {
 		profiles[name] = profile
 	}
 	all := make([]Entry, 0, len(merged))
@@ -261,10 +374,12 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 		all = append(all, Entry{Name: name, Value: value, Scope: registrationScope(value)})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+	rt.mu.Lock()
 	rt.allEntries = all
+	rt.mu.Unlock()
 	var active *Profile
-	if rt.identity.Profile != "" {
-		profile, err := resolveProfiles(profiles, rt.identity.Profile)
+	if profileName != "" {
+		profile, err := resolveProfiles(profiles, profileName)
 		if err != nil {
 			return err
 		}
@@ -272,65 +387,45 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	}
 	selected := make([]Entry, 0, len(all))
 	for _, entry := range all {
-		// Basic and codec registrations describe the Runtime's foundation. They
+		// Basic and codec registrations describe the process foundation. They
 		// are always delivered to their module, even when a Profile selects a
 		// smaller set of business components. A Profile chooses entry modules;
 		// it does not make JSON, types, MIME values, status text, or custom
-		// codecs disappear from the Runtime.
+		// codecs disappear from the process.
 		if active == nil || isFoundationEntry(entry) || active.matches(entry.Key()) {
 			selected = append(selected, entry)
 		}
 	}
+	rt.mu.Lock()
 	rt.entries = selected
+	rt.mu.Unlock()
 	modules := globalModules()
-	instances := make([]Instance, len(modules))
-	names := make([]string, len(modules))
-	for i, module := range modules {
-		instance := module.New()
-		if instance == nil {
-			return fmt.Errorf("dubi: module %q returned nil instance", moduleName(module))
-		}
-		instances[i] = instance
-		names[i] = moduleName(module)
-		if core, ok := instance.(*coreInstance); ok {
-			rt.core = core
-		}
-		if basic, ok := instance.(*basicInstance); ok {
-			rt.basic = basic
-		}
-		if codec, ok := instance.(*codecInstance); ok {
-			rt.codec = codec
-		}
-	}
-	if rt.basic != nil {
-		rt.basic.codec = rt.codec
-	}
 	base := rt.lifecycleContext(ctx)
-	for i, instance := range instances {
-		if err := instance.Config(rt.config.Clone()); err != nil {
-			return fmt.Errorf("dubi: config %q: %w", names[i], err)
+	for _, module := range modules {
+		name := moduleName(module)
+		if err := module.Config(config.Clone()); err != nil {
+			return fmt.Errorf("dubi: config %q: %w", name, err)
 		}
 	}
-	for _, instance := range instances {
+	for _, module := range modules {
 		for _, registration := range selected {
-			instance.Register(registration.Name, registration.Value)
+			module.Register(registration.Name, registration.Value)
 		}
 	}
-	for i, instance := range instances {
-		base.Name = names[i]
-		if err := instance.Setup(base); err != nil {
+	for _, module := range modules {
+		base.Name = moduleName(module)
+		if err := module.Setup(base); err != nil {
 			return fmt.Errorf("dubi: setup %q: %w", base.Name, err)
 		}
 	}
-	rt.instances = instances
-	rt.moduleNames = names
-	rt.state = stateSetup
+	setupOK = true
+	rt.finishLifecycle(stateSetup)
 	return nil
 }
 
 // isFoundationEntry reports whether an entry configures one of the process
-// foundation modules. Foundation registrations are scoped per Runtime, but
-// are independent of the business Profile selected for that Runtime.
+// foundation modules. Foundation registrations are independent of the
+// business Profile selected for the process.
 func isFoundationEntry(entry Entry) bool {
 	if entry.Scope == "codec" || entry.Scope == "basic" || strings.HasPrefix(entry.Scope, "basic:") {
 		return true
@@ -346,12 +441,14 @@ func isFoundationEntry(entry Entry) bool {
 	}
 }
 
-// Config returns a copy of the Runtime configuration delivered to modules.
+// Config returns a copy of the process configuration delivered to modules.
 func (rt *Runtime) Config() Map {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.config.Clone()
 }
+
+func Config() Map { return DefaultRuntime().Config() }
 
 func asProfile(value any) (Profile, bool) {
 	switch profile := value.(type) {
@@ -366,96 +463,92 @@ func asProfile(value any) (Profile, bool) {
 }
 
 func (rt *Runtime) Open(ctx context.Context) error {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.state != stateSetup {
-		return fmt.Errorf("dubi: open called in state %s", rt.state)
+	if err := rt.beginLifecycle("open", stateSetup); err != nil {
+		return err
 	}
 	base := rt.lifecycleContext(ctx)
-	instances := rt.instances
+	modules := globalModules()
 	opened := 0
-	for i, instance := range instances {
-		base.Name = rt.moduleNames[i]
-		if err := instance.Open(base); err != nil {
+	for _, module := range modules {
+		base.Name = moduleName(module)
+		if err := module.Open(base); err != nil {
 			for j := opened - 1; j >= 0; j-- {
-				_ = instances[j].Close(base)
+				_ = modules[j].Close(base)
 			}
+			rt.finishLifecycle(stateSetup)
 			return fmt.Errorf("dubi: open %q: %w", base.Name, err)
 		}
 		opened++
 	}
-	rt.state = stateOpen
+	rt.finishLifecycle(stateOpen)
 	return nil
 }
 
-// Start starts all module instances and returns immediately. The caller owns
-// process-level waiting and can stop this Runtime with End.
+// Start starts all mounted process modules and returns immediately. The caller
+// owns process-level waiting and can stop the process with End.
 func (rt *Runtime) Start(ctx context.Context) error {
-	if err := rt.start(ctx); err != nil {
-		return err
-	}
-	runtimeManager.add(rt)
-	return nil
+	return rt.start(ctx)
 }
 
 func (rt *Runtime) start(ctx context.Context) error {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.state != stateOpen {
-		return fmt.Errorf("dubi: start called in state %s", rt.state)
+	if err := rt.beginLifecycle("start", stateOpen); err != nil {
+		return err
 	}
 	base := rt.lifecycleContext(ctx)
-	instances := rt.instances
+	modules := globalModules()
 	started := 0
-	for i, instance := range instances {
-		base.Name = rt.moduleNames[i]
-		if err := instance.Start(base); err != nil {
+	for _, module := range modules {
+		base.Name = moduleName(module)
+		if err := module.Start(base); err != nil {
 			for j := started - 1; j >= 0; j-- {
-				_ = instances[j].Stop(base)
+				_ = modules[j].Stop(base)
 			}
+			rt.finishLifecycle(stateOpen)
 			return fmt.Errorf("dubi: start %q: %w", base.Name, err)
 		}
 		started++
 	}
-	rt.state = stateStarted
+	// Register the running process before releasing the lifecycle transition.
+	// A concurrent End must either wait for this transition to finish or see
+	// the active process; it must never observe a started runtime that is absent
+	// from the process wait manager.
+	runtimeManager.add(rt)
+	rt.finishLifecycle(stateStarted)
 	return nil
 }
 
 func (rt *Runtime) Stop(ctx context.Context) error {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.state != stateStarted {
-		return fmt.Errorf("dubi: stop called in state %s", rt.state)
+	if err := rt.beginLifecycle("stop", stateStarted); err != nil {
+		return err
 	}
 	base := rt.lifecycleContext(ctx)
-	instances := rt.instances
+	modules := globalModules()
 	var first error
-	for i := len(instances) - 1; i >= 0; i-- {
-		base.Name = rt.moduleNames[i]
-		if err := instances[i].Stop(base); err != nil && first == nil {
+	for i := len(modules) - 1; i >= 0; i-- {
+		base.Name = moduleName(modules[i])
+		if err := modules[i].Stop(base); err != nil && first == nil {
 			first = fmt.Errorf("dubi: stop %q: %w", base.Name, err)
 		}
 	}
-	rt.state = stateStopped
+	rt.finishLifecycle(stateStopped)
+	runtimeManager.remove(rt)
 	return first
 }
 
 func (rt *Runtime) Close(ctx context.Context) error {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.state != stateStopped && rt.state != stateOpen && rt.state != stateSetup {
-		return fmt.Errorf("dubi: close called in state %s", rt.state)
+	if err := rt.beginLifecycle("close", stateStopped, stateOpen, stateSetup); err != nil {
+		return err
 	}
 	base := rt.lifecycleContext(ctx)
-	instances := rt.instances
+	modules := globalModules()
 	var first error
-	for i := len(instances) - 1; i >= 0; i-- {
-		base.Name = rt.moduleNames[i]
-		if err := instances[i].Close(base); err != nil && first == nil {
+	for i := len(modules) - 1; i >= 0; i-- {
+		base.Name = moduleName(modules[i])
+		if err := modules[i].Close(base); err != nil && first == nil {
 			first = fmt.Errorf("dubi: close %q: %w", base.Name, err)
 		}
 	}
-	rt.state = stateClosed
+	rt.finishLifecycle(stateClosed)
 	return first
 }
 
@@ -463,8 +556,8 @@ func normalizeScope(scope string) string {
 	return strings.Trim(strings.ToLower(scope), ". ")
 }
 
-// lifecycleContext gives every module lifecycle callback the same Runtime
-// bound Meta facade. Modules can use ctx.Marshal, ctx.Mapping, ctx.String and
+// lifecycleContext gives every module lifecycle callback the same process
+// Meta facade. Modules can use ctx.Marshal, ctx.Mapping, ctx.String and
 // ctx.Invoke without reaching into Runtime directly.
 func (rt *Runtime) lifecycleContext(ctx context.Context) *Context {
 	if ctx == nil {
@@ -472,8 +565,7 @@ func (rt *Runtime) lifecycleContext(ctx context.Context) *Context {
 	}
 	return &Context{
 		Context: ctx,
-		Meta:    NewMeta(rt).WithContext(ctx),
-		Runtime: rt,
+		Meta:    NewMeta().WithContext(ctx),
 	}
 }
 

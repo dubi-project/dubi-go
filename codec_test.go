@@ -8,7 +8,7 @@ import (
 )
 
 func TestRuntimeCodecIsolatedAndBuiltInJSON(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	rt.Register("upper", Codec{
 		Encode: func(value Any) (Any, error) { return []byte(value.(string)), nil },
 		Decode: func(value Any, _ Any) (Any, error) { return value, nil },
@@ -33,37 +33,24 @@ func TestRuntimeCodecIsolatedAndBuiltInJSON(t *testing.T) {
 	if err != nil || string(encoded) != "hello" {
 		t.Fatalf("custom codec = %q, %v", encoded, err)
 	}
-	meta := NewMeta(rt)
+	meta := NewMeta()
 	encoded, err = meta.Marshal("upper", "from-meta")
 	if err != nil || string(encoded) != "from-meta" {
 		t.Fatalf("meta codec = %q, %v", encoded, err)
 	}
 }
 
-func TestRuntimeCodecOverridesAreIsolated(t *testing.T) {
-	first := New()
-	first.Register("label", Codec{
+func TestRuntimeCodecUsesProcessRegistry(t *testing.T) {
+	rt := testRuntime()
+	rt.Register("label", Codec{
 		Encode: func(value Any) (Any, error) { return []byte("first:" + value.(string)), nil },
 	})
-	second := New()
-	second.Register("label", Codec{
-		Encode: func(value Any) (Any, error) { return []byte("second:" + value.(string)), nil },
-	})
-	if err := first.Setup(context.Background()); err != nil {
+	if err := rt.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.Setup(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	defer first.Close(context.Background())
-	defer second.Close(context.Background())
-
-	firstValue, err := NewMeta(first).Marshal("label", "value")
-	if err != nil || string(firstValue) != "first:value" {
-		t.Fatalf("first runtime codec = %q, %v", firstValue, err)
-	}
-	secondValue, err := NewMeta(second).Marshal("label", "value")
-	if err != nil || string(secondValue) != "second:value" {
-		t.Fatalf("second runtime codec = %q, %v", secondValue, err)
+	defer rt.Close(context.Background())
+	value, err := NewMeta().Marshal("label", "value")
+	if err != nil || string(value) != "first:value" {
+		t.Fatalf("process codec = %q, %v", value, err)
 	}
 }

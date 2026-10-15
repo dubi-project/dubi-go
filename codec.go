@@ -10,7 +10,7 @@ import (
 )
 
 // Codec is a named dynamic encoder and decoder. It is registered through the
-// same Registry as every other Dubi component and kept per Runtime.
+// same Registry as every other Dubi component and kept by the process module.
 type Codec struct {
 	Name   string
 	Alias  []string
@@ -20,23 +20,20 @@ type Codec struct {
 
 func (Codec) Scope() string { return "codec" }
 
-type codecModule struct{}
-
-type codecInstance struct {
+type codecModule struct {
 	codecs map[string]Codec
 }
 
-func init() { Mount(&codecModule{}) }
+var codec = &codecModule{codecs: make(map[string]Codec)}
 
-func (*codecModule) New() Instance {
-	instance := &codecInstance{codecs: make(map[string]Codec)}
-	for name, codec := range builtinCodecs() {
-		instance.codecs[name] = codec
+func init() {
+	for name, item := range builtinCodecs() {
+		codec.codecs[name] = item
 	}
-	return instance
+	Mount(codec)
 }
 
-func (c *codecInstance) Register(name string, value any) {
+func (c *codecModule) Register(name string, value any) {
 	switch item := value.(type) {
 	case Codec:
 		c.register(name, item)
@@ -47,7 +44,11 @@ func (c *codecInstance) Register(name string, value any) {
 	}
 }
 
-func (c *codecInstance) register(name string, item Codec) {
+func (c *codecModule) Reset() {
+	c.codecs = builtinCodecs()
+}
+
+func (c *codecModule) register(name string, item Codec) {
 	if item.Name == "" {
 		item.Name = name
 	}
@@ -60,19 +61,19 @@ func (c *codecInstance) register(name string, item Codec) {
 	}
 }
 
-func (*codecInstance) Config(base.Map) error { return nil }
-func (*codecInstance) Setup(*Context) error  { return nil }
-func (*codecInstance) Open(*Context) error   { return nil }
-func (*codecInstance) Start(*Context) error  { return nil }
-func (*codecInstance) Stop(*Context) error   { return nil }
-func (*codecInstance) Close(*Context) error  { return nil }
+func (*codecModule) Config(base.Map) error { return nil }
+func (*codecModule) Setup(*Context) error  { return nil }
+func (*codecModule) Open(*Context) error   { return nil }
+func (*codecModule) Start(*Context) error  { return nil }
+func (*codecModule) Stop(*Context) error   { return nil }
+func (*codecModule) Close(*Context) error  { return nil }
 
 func (rt *Runtime) Encode(name string, value base.Any) (base.Any, error) {
-	return rt.codecInstance().encode(name, value)
+	return rt.codecModule().encode(name, value)
 }
 
 func (rt *Runtime) Decode(name string, data base.Any, target base.Any) (base.Any, error) {
-	return rt.codecInstance().decode(name, data, target)
+	return rt.codecModule().decode(name, data, target)
 }
 
 func (rt *Runtime) Marshal(name string, value base.Any) ([]byte, error) {
@@ -107,7 +108,7 @@ func Unmarshal(name string, data []byte, target base.Any) error {
 	return DefaultRuntime().Unmarshal(name, data, target)
 }
 
-func (c *codecInstance) encode(name string, value base.Any) (base.Any, error) {
+func (c *codecModule) encode(name string, value base.Any) (base.Any, error) {
 	codec, ok := c.codecs[strings.ToLower(strings.TrimSpace(name))]
 	if !ok || codec.Encode == nil {
 		return nil, fmt.Errorf("dubi: codec %q is not registered", name)
@@ -115,7 +116,7 @@ func (c *codecInstance) encode(name string, value base.Any) (base.Any, error) {
 	return codec.Encode(value)
 }
 
-func (c *codecInstance) decode(name string, data base.Any, target base.Any) (base.Any, error) {
+func (c *codecModule) decode(name string, data base.Any, target base.Any) (base.Any, error) {
 	codec, ok := c.codecs[strings.ToLower(strings.TrimSpace(name))]
 	if !ok || codec.Decode == nil {
 		return nil, fmt.Errorf("dubi: codec %q is not registered", name)
@@ -123,23 +124,11 @@ func (c *codecInstance) decode(name string, data base.Any, target base.Any) (bas
 	return codec.Decode(data, target)
 }
 
-func (rt *Runtime) codecInstance() *codecInstance {
-	if rt != nil && rt.codec != nil {
-		return rt.codec
-	}
-	return codecForRuntime(nil)
+func (rt *Runtime) codecModule() *codecModule {
+	return codec
 }
 
-var standaloneCodec = func() *codecInstance {
-	return (&codecModule{}).New().(*codecInstance)
-}()
-
-func codecForRuntime(rt *Runtime) *codecInstance {
-	if rt != nil && rt.codec != nil {
-		return rt.codec
-	}
-	return standaloneCodec
-}
+func codecForRuntime(*Runtime) *codecModule { return codec }
 
 func builtinCodecs() map[string]Codec {
 	jsonCodec := Codec{

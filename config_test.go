@@ -15,7 +15,7 @@ func TestConfigFileIdentityAndRunProfileOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", path)
-	rt := New(WithTenant("override-tenant"), WithRole("override-role"), WithNode("override-node"), WithProfile("option-profile"), WithEndpoint("override:7000"))
+	rt := testRuntime(WithTenant("override-tenant"), WithRole("override-role"), WithNode("override-node"), WithProfile("option-profile"), WithEndpoint("override:7000"))
 	if err := rt.Run(""); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestConfigFileProvidesRuntimeProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", path)
-	rt := NewRuntime()
+	rt := testRuntime()
 	rt.Register("user.get", Method{})
 	rt.Register("mail.send", Service{})
 	if err := rt.Run(); err != nil {

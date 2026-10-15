@@ -65,7 +65,7 @@ func (r *result) Error() string {
 	if r == nil || r.code == 0 {
 		return ""
 	}
-	return defaultBasicInstance().text("default", r.status, r.args...)
+	return processBasic().text("default", r.status, r.args...)
 }
 
 // String makes results convenient to log and format. It intentionally uses

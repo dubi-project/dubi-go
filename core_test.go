@@ -10,7 +10,7 @@ import (
 )
 
 func TestMethodAndServiceInvocation(t *testing.T) {
-	rt := NewRuntime()
+	rt := testRuntime()
 	rt.Register("math.add", Method{Action: func(ctx *Context) (Map, Res) {
 		left, _ := ctx.Args["left"].(int)
 		right, _ := ctx.Args["right"].(int)
@@ -33,7 +33,6 @@ func TestMethodAndServiceInvocation(t *testing.T) {
 	defer rt.End()
 
 	meta := NewMeta()
-	meta = NewMeta(rt)
 	data := meta.Invoke("math.add", Map{"left": 2, "right": 3})
 	if !meta.InvokeOK("math.add", Map{"left": 1, "right": 1}) {
 		t.Fatalf("method result = %#v", meta.Result())
@@ -56,7 +55,7 @@ func TestMethodAndServiceInvocation(t *testing.T) {
 }
 
 func TestMethodProfileUsesCoreScope(t *testing.T) {
-	rt := NewRuntime()
+	rt := testRuntime()
 	rt.Register("web", Profile{Include: []string{"core:method:*"}})
 	rt.Register("user.get", Method{Action: func(*Context) Map { return Map{"ok": true} }})
 	rt.Register("mail.send", Service{Action: func(*Context) Map { return Map{"ok": true} }})
@@ -71,7 +70,7 @@ func TestMethodProfileUsesCoreScope(t *testing.T) {
 }
 
 func TestMethodSupportsDynamicErrorReturns(t *testing.T) {
-	rt := NewRuntime()
+	rt := testRuntime()
 	rt.Register("dynamic", Method{Action: func(*Context) (any, error) {
 		return map[string]any{"ok": true}, nil
 	}})
@@ -83,7 +82,7 @@ func TestMethodSupportsDynamicErrorReturns(t *testing.T) {
 	}
 	defer rt.Close(context.Background())
 
-	meta := NewMeta(rt)
+	meta := NewMeta()
 	data := meta.Invoke("dynamic")
 	if data["ok"] != true || meta.Result() == nil || meta.Result().Fail() {
 		t.Fatalf("dynamic return = %#v, %v", data, meta.Result())
@@ -94,7 +93,7 @@ func TestMethodSupportsDynamicErrorReturns(t *testing.T) {
 }
 
 func TestMethodMapsArgsAndData(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	rt.Register("user.get", Method{
 		Args: Vars{"id": {Type: "int", Required: true}},
 		Data: Vars{"name": {Type: "string"}},
@@ -116,7 +115,7 @@ func TestMethodMapsArgsAndData(t *testing.T) {
 }
 
 func TestServiceSupportsListAndBooleanReturns(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	rt.Register("users.list", Service{Action: func(*Context) []Map {
 		return []Map{{"id": "u-1"}, {"id": "u-2"}}
 	}})

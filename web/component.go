@@ -14,6 +14,9 @@ type Router struct {
 	Uris     []string
 	Name     string
 	Desc     string
+	Kind     string
+	Sign     bool
+	Auth     bool
 	Args     Vars
 	Data     Vars
 	Setting  Map
@@ -106,6 +109,15 @@ func mergeRouter(target *Router, override Router) {
 	}
 	if override.Desc != "" {
 		target.Desc = override.Desc
+	}
+	if override.Kind != "" {
+		target.Kind = override.Kind
+	}
+	if override.Sign {
+		target.Sign = true
+	}
+	if override.Auth {
+		target.Auth = true
 	}
 	if override.Args != nil {
 		if target.Args == nil {

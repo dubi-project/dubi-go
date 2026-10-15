@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"testing"
 
-	dubi "github.com/dubi-project/dubi-go"
 	. "github.com/dubi-project/dubi-go/base"
 )
 
@@ -53,7 +52,7 @@ func BenchmarkQueryValuesNested(b *testing.B) {
 }
 
 func BenchmarkMappingPrepared(b *testing.B) {
-	runtime := dubi.New()
+	runtime := testRuntime()
 	definition := Vars{
 		"user": {Type: "object", Children: Vars{
 			"name": {Type: "string", Required: true},
@@ -70,29 +69,26 @@ func BenchmarkMappingPrepared(b *testing.B) {
 
 func BenchmarkRequestFormValuesJSON(b *testing.B) {
 	payload := []byte(`{"user":{"name":"Ada","age":36}}`)
-	runtime := dubi.New()
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		request, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(payload))
 		request.Header.Set("Content-Type", "application/json")
-		_, _, _ = requestFormValues(request, runtime)
+		_, _, _ = requestFormValues(request)
 	}
 }
 
 func BenchmarkRequestFormValuesForm(b *testing.B) {
 	payload := []byte("user.name=Ada&users%5B0%5D.id=1&tags%5B%5D=go&tags%5B%5D=dubi")
-	runtime := dubi.New()
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {
 		request, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(payload))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		_, _, _ = requestFormValues(request, runtime)
+		_, _, _ = requestFormValues(request)
 	}
 }
 
 func BenchmarkHTTPRouteEndToEnd(b *testing.B) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	err := server.register(map[string]Router{
 		"index": {Uri: "/", Action: func(ctx *Context) { ctx.JSON(Map{"ok": true}) }},
 	}, nil, nil)
@@ -111,8 +107,7 @@ func BenchmarkHTTPRouteEndToEnd(b *testing.B) {
 }
 
 func BenchmarkHTTPRouteFrameworkOnly(b *testing.B) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	if err := server.register(map[string]Router{
 		"index": {Uri: "/", Action: func(ctx *Context) { ctx.JSON(Map{"ok": true}) }},
 	}, nil, nil); err != nil {
@@ -131,8 +126,7 @@ func BenchmarkHTTPRouteFrameworkOnly(b *testing.B) {
 }
 
 func BenchmarkHTTPRoutePipeline(b *testing.B) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	if err := server.register(
 		map[string]Router{
 			"index": {Uri: "/", Action: func(ctx *Context) { ctx.JSON(Map{"ok": true}) }},
@@ -156,9 +150,31 @@ func BenchmarkHTTPRoutePipeline(b *testing.B) {
 	}
 }
 
+func BenchmarkHTTPRouteParallel(b *testing.B) {
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
+	if err := server.register(map[string]Router{
+		"user": {
+			Uri:    "/users/{id}",
+			Action: func(ctx *Context) { ctx.Status(http.StatusNoContent) },
+		},
+	}, nil, nil); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			request := httptest.NewRequest(http.MethodGet, "http://example.test/users/u-1", nil)
+			response := httptest.NewRecorder()
+			server.serveHTTP(response, request)
+			if response.Code != http.StatusNoContent {
+				b.Fatalf("status = %d", response.Code)
+			}
+		}
+	})
+}
+
 func BenchmarkHTTPRoutePathParameter(b *testing.B) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	if err := server.register(map[string]Router{
 		"user": {Uri: "/users/{id}", Action: func(ctx *Context) { ctx.Status(http.StatusNoContent) }},
 	}, nil, nil); err != nil {
@@ -177,8 +193,7 @@ func BenchmarkHTTPRoutePathParameter(b *testing.B) {
 }
 
 func BenchmarkHTTPNotFoundEndToEnd(b *testing.B) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/missing", nil)
 	b.ReportAllocs()
 	for index := 0; index < b.N; index++ {

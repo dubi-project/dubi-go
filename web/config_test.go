@@ -45,7 +45,7 @@ func TestParseSingleHTTPConfig(t *testing.T) {
 }
 
 func TestHTTPConfigOnlyStartsWhenRequiredOrRegistered(t *testing.T) {
-	instance := (&Module{}).New().(*Instance)
+	instance := &Module{}
 	if err := instance.Config(Map{"web": Map{"port": 8080}}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestHTTPConfigOnlyStartsWhenRequiredOrRegistered(t *testing.T) {
 	if !instance.enabled {
 		t.Fatal("HTTP router should enable the runtime")
 	}
-	required := (&Module{}).New().(*Instance)
+	required := &Module{}
 	if err := required.Config(Map{"web": Map{"port": 8080, "require": true}}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +128,13 @@ func TestSingleAndMultipleHTTPFormsCannotMixSites(t *testing.T) {
 }
 
 func TestCORSPreflightUsesServerPolicy(t *testing.T) {
-	server := newServerRuntime(ServerConfig{
+	server := newServerState(ServerConfig{
 		Name: "default",
 		Cross: Map{
 			"origins":     []any{"https://app.example.com"},
 			"credentials": true,
 		},
-	}, nil, map[string]struct{}{"default": {}})
+	}, map[string]struct{}{"default": {}})
 	request := httptest.NewRequest(stdhttp.MethodOptions, "http://127.0.0.1/", nil)
 	request.Header.Set("Origin", "https://app.example.com")
 	request.Header.Set("Access-Control-Request-Headers", "Content-Type")
@@ -159,7 +159,7 @@ func TestHTTPRuntimeServesStaticFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	if err := rt.Run(); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestHTTPResponseHelpers(t *testing.T) {
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
 	state := dubi.Result(77, "test.created", "created")
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("html", Router{Uri: "/html", Action: func(ctx *Context) { ctx.HTML("<h1>ok</h1>") }})
 	rt.Register("redirect", Router{Uri: "/redirect", Action: func(ctx *Context) { ctx.Redirect("/html", 301) }})
 	rt.Register("binary", Router{Uri: "/binary", Action: func(ctx *Context) { ctx.Binary([]byte("bytes"), "bytes.bin") }})
@@ -265,7 +265,7 @@ func TestHTTPRuntimeServesRouterAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("index", Router{Uri: "/", Action: func(ctx *Context) {
 		ctx.JSON(Map{"ok": true})
 	}})
@@ -299,7 +299,7 @@ func TestHTTPMethodMismatchReturns405(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("create", Router{Method: stdhttp.MethodPost, Uri: "/items", Action: func(ctx *Context) { ctx.Text("created") }})
 	if err := rt.Run(); err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestHTTPRequestBodyLimitReturns413(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("body", Router{Method: stdhttp.MethodPost, Uri: "/body", Action: func(ctx *Context) { ctx.Text("ok") }})
 	if err := rt.Run(); err != nil {
 		t.Fatal(err)
@@ -351,7 +351,7 @@ func TestHTTPPanicRecoveryAddsRequestID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("panic", Router{Uri: "/panic", Action: func(*Context) { panic("boom") }})
 	if err := rt.Run(); err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ func TestHTTPMultipartUploadsAndNestedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("upload", Router{Method: stdhttp.MethodPost, Uri: "/upload", Action: func(ctx *Context) {
 		user, _ := ctx.Form["user"].(Map)
 		file, ok := ctx.Upload("avatar")
@@ -424,7 +424,7 @@ func TestHTTPTrustedProxyAndCompression(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("proxy", Router{Uri: "/proxy", Action: func(ctx *Context) {
 		ctx.Text("a long response that should be compressed when the client supports gzip: " + ctx.ClientIP())
 	}})
@@ -467,7 +467,7 @@ func TestHTTPContextParsesPathAndQueryValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("user", Router{Uri: "/users/{id}", Action: func(ctx *Context) {
 		ctx.JSON(Map{"id": ctx.Params["id"], "page": ctx.Query["page"]})
 	}})
@@ -496,7 +496,7 @@ func TestHTTPContextBuildsRouteURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("user.show", Router{Uri: "/users/{id}", Action: func(ctx *Context) {
 		ctx.JSON(Map{
 			"uri": ctx.RouteUri("user.show", Map{"{id}": "u-1", "page": 2}),
@@ -532,7 +532,7 @@ func TestHTTPRouterMapsVarsAndJSONBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("create", Router{
 		Uri: "/users",
 		Args: Vars{
@@ -577,7 +577,7 @@ func TestHTTPRouteLoadingAndAnswerData(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("user.get", dubi.Method{Action: func(ctx *dubi.Context) Map {
 		return Map{"id": ctx.Args["id"], "name": "alice"}
 	}})
@@ -636,7 +636,7 @@ func TestHTTPFailuresUseFailedResultPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	failed := Handler{Failed: func(ctx *Context) {
 		ctx.Answer(ctx.Result())
 	}}
@@ -739,7 +739,7 @@ func TestHTTPNotFoundCarriesResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("errors", Handler{NotFound: func(ctx *Context) {
 		ctx.Answer(ctx.Result())
 	}})
@@ -774,7 +774,7 @@ func TestHTTPRuntimeSelectsSiteByHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("www.index", Router{Uri: "/", Action: func(ctx *Context) { ctx.Text("www") }})
 	rt.Register("api.index", Router{Uri: "/", Action: func(ctx *Context) { ctx.Text("api") }})
 	if err := rt.Run(); err != nil {
@@ -826,7 +826,7 @@ func TestHTTPContextMergesWebSiteAndRouterSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("www.index", Router{
 		Uri:     "/",
 		Setting: Map{"router": true, "shared": "router"},
@@ -867,7 +867,7 @@ func TestHTTPRuntimeServesMultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("a.index", Router{Uri: "/", Action: func(ctx *Context) { ctx.Text("a") }})
 	rt.Register("b.index", Router{Uri: "/", Action: func(ctx *Context) { ctx.Text("b") }})
 	if err := rt.Run(); err != nil {
@@ -899,7 +899,7 @@ func TestHTTPFilterAndHandlerChains(t *testing.T) {
 	t.Setenv("DUBI_CONFIG", configPath)
 	steps := make([]string, 0, 4)
 	actionSteps := make([]string, 0, 3)
-	rt := dubi.New()
+	rt := testRuntime()
 	rt.Register("access", Filter{
 		Serve: func(ctx *Context) {
 			steps = append(steps, "before")

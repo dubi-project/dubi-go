@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -35,7 +36,7 @@ var contextPool = sync.Pool{
 // this object and may explicitly invoke Dubi business operations when useful.
 type Context struct {
 	*dubi.Meta
-	runtime   *dubi.Runtime
+	metaValue dubi.Meta
 	Request   *stdhttp.Request
 	Writer    stdhttp.ResponseWriter
 	StartedAt time.Time
@@ -221,12 +222,60 @@ func (ctx *Context) SetCookieValue(name, value string, maxAge ...time.Duration) 
 	ctx.SetCookie(&stdhttp.Cookie{Name: name, Value: value, Path: "/", MaxAge: seconds})
 }
 
+// Auth issues an authenticated Token using the current Router.Kind and writes
+// it to the process module's configured auth cookie. The token is also returned for
+// clients that prefer an Authorization header or a response body.
+func (ctx *Context) Auth(payload ...Map) string {
+	var value Map
+	if len(payload) > 0 {
+		value = payload[0]
+	}
+	token, err := ctx.SignToken(dubi.Token{
+		Auth:    true,
+		Kind:    ctx.Config.Kind,
+		Payload: value,
+	})
+	if err != nil {
+		ctx.Error(dubi.ErrorResult(err))
+		return ""
+	}
+	if ctx.Request != nil && ctx.Writer != nil {
+		cookie := &stdhttp.Cookie{
+			Name:     dubi.AuthCookieName(),
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: stdhttp.SameSiteLaxMode,
+			MaxAge:   int(dubi.AuthTTL() / time.Second),
+			Secure:   ctx.Request.TLS != nil,
+		}
+		ctx.SetCookie(cookie)
+	}
+	return token
+}
+
+// Sign issues a signed but unauthenticated Token using the current
+// Router.Kind. It is useful for callbacks and other routes that require
+// integrity without a logged-in identity.
+func (ctx *Context) Sign(payload ...Map) string {
+	var value Map
+	if len(payload) > 0 {
+		value = payload[0]
+	}
+	token, err := ctx.SignToken(dubi.Token{
+		Kind:    ctx.Config.Kind,
+		Payload: value,
+	})
+	if err != nil {
+		ctx.Error(dubi.ErrorResult(err))
+		return ""
+	}
+	return token
+}
+
 // String resolves a translation using the request language.
 func (ctx *Context) String(key string, args ...any) string {
-	if ctx.runtime == nil {
-		return key
-	}
-	return ctx.runtime.String(ctx.Language(), key, args...)
+	return dubi.String(ctx.Language(), key, args...)
 }
 
 func (ctx *Context) Status(code int) {
@@ -346,33 +395,30 @@ func defaultOutcomeResult(status string) Res {
 	}
 }
 
-// NewContext creates a Context for an existing HTTP request.
-func NewContext(runtime *dubi.Runtime, writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
-	return initContext(nil, runtime, writer, request)
+// NewContext creates a Context for an existing HTTP request using the process
+// runtime.
+func NewContext(writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
+	return initContext(nil, writer, request)
 }
 
-func acquireContext(runtime *dubi.Runtime, writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
-	return initContext(contextPool.Get().(*Context), runtime, writer, request)
+func acquireContext(writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
+	return initContext(contextPool.Get().(*Context), writer, request)
 }
 
-func initContext(ctx *Context, runtime *dubi.Runtime, writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
-	if runtime == nil {
-		runtime = dubi.DefaultRuntime()
-	}
+func initContext(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) *Context {
 	if ctx == nil {
 		ctx = &Context{}
 	}
 	language := ""
 	ajax := request.Header.Get("X-Requested-With") != "" || request.Header.Get("Ajax") != ""
-	language = runtime.DetectLanguage(request.Header.Get("Accept-Language"))
-	meta := dubi.NewMeta(runtime).WithContext(request.Context())
+	language = dubi.DetectLanguage(request.Header.Get("Accept-Language"))
+	meta := (&ctx.metaValue).Reset(request.Context())
 	meta.Language(language)
 	output := responseWriterPool.Get().(*responseWriter)
 	output.ResponseWriter = writer
 	output.code = 0
 	output.Header()["X-Request-ID"] = []string{meta.Id()}
 	ctx.Meta = meta
-	ctx.runtime = runtime
 	ctx.Request = request
 	ctx.Writer = output
 	ctx.StartedAt = time.Now()
@@ -442,8 +488,15 @@ func releaseContext(ctx *Context) {
 		output.code = 0
 		responseWriterPool.Put(output)
 	}
+	if ctx.Meta != nil {
+		ctx.Meta.WithContext(context.Background())
+		ctx.Meta.TraceId("")
+		ctx.Meta.SpanId("")
+		ctx.Meta.Language("")
+		ctx.Meta.Token("")
+		ctx.Meta.Result(nil)
+	}
 	ctx.Meta = nil
-	ctx.runtime = nil
 	ctx.Request = nil
 	ctx.Writer = nil
 	ctx.StartedAt = time.Time{}
@@ -521,36 +574,41 @@ func pathParamsInto(params Map, request *stdhttp.Request, parameters []pathParam
 	if path == "" {
 		path = "/"
 	}
+	path = strings.TrimPrefix(path, "/")
+	cursor, segmentIndex := 0, 0
 	for _, parameter := range parameters {
-		segment, ok := pathSegment(path, parameter.segment, parameter.multi)
-		if !ok {
+		for segmentIndex < parameter.segment && cursor <= len(path) {
+			slash := strings.IndexByte(path[cursor:], '/')
+			if slash < 0 {
+				cursor = len(path) + 1
+				break
+			}
+			cursor += slash + 1
+			segmentIndex++
+		}
+		if cursor > len(path) {
 			continue
+		}
+		var segment string
+		if parameter.multi {
+			segment = path[cursor:]
+			cursor = len(path) + 1
+		} else {
+			slash := strings.IndexByte(path[cursor:], '/')
+			if slash < 0 {
+				segment = path[cursor:]
+				cursor = len(path) + 1
+			} else {
+				segment = path[cursor : cursor+slash]
+				cursor += slash + 1
+			}
+			segmentIndex++
 		}
 		value := unescapePathValue(segment)
 		request.SetPathValue(parameter.name, value)
 		if value != "" {
 			params[parameter.name] = value
 		}
-	}
-}
-
-func pathSegment(path string, index int, multi bool) (string, bool) {
-	path = strings.TrimPrefix(path, "/")
-	for current := 0; ; current++ {
-		if current == index {
-			if multi {
-				return path, true
-			}
-			if slash := strings.IndexByte(path, '/'); slash >= 0 {
-				return path[:slash], true
-			}
-			return path, true
-		}
-		slash := strings.IndexByte(path, '/')
-		if slash < 0 {
-			return "", false
-		}
-		path = path[slash+1:]
 	}
 }
 

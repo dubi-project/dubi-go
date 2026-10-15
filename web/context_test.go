@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	dubi "github.com/dubi-project/dubi-go"
@@ -26,14 +28,13 @@ func TestInputPathTokens(t *testing.T) {
 }
 
 func TestPooledContextClearsRequestState(t *testing.T) {
-	runtime := dubi.New()
-	first := acquireContext(runtime, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	first := acquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	first.Params["stale"] = true
 	first.Locals["stale"] = true
 	first.Body = "stale"
 	releaseContext(first)
 
-	second := acquireContext(runtime, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	second := acquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	defer releaseContext(second)
 	if len(second.Params) != 0 || len(second.Locals) != 0 || second.Body != nil || second.Code != 0 {
 		t.Fatalf("pooled context retained state: params=%#v locals=%#v body=%#v code=%d", second.Params, second.Locals, second.Body, second.Code)
@@ -41,8 +42,7 @@ func TestPooledContextClearsRequestState(t *testing.T) {
 }
 
 func TestContextStatusCodePredictsResponseStatus(t *testing.T) {
-	runtime := dubi.New()
-	ctx := acquireContext(runtime, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	ctx := acquireContext(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	defer releaseContext(ctx)
 	if got, want := ctx.StatusCode(), http.StatusNoContent; got != want {
 		t.Fatalf("empty status = %d, want %d", got, want)
@@ -54,6 +54,65 @@ func TestContextStatusCodePredictsResponseStatus(t *testing.T) {
 	ctx.Status(http.StatusCreated)
 	if got, want := ctx.StatusCode(), http.StatusCreated; got != want {
 		t.Fatalf("explicit status = %d, want %d", got, want)
+	}
+}
+
+func TestRouterAuthUsesKindAndCookie(t *testing.T) {
+	runtime := testRuntime()
+	if err := runtime.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close(context.Background())
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
+	err := server.register(map[string]Router{
+		"login": {
+			Uri:  "/login",
+			Kind: "user",
+			Action: func(ctx *Context) {
+				ctx.Text(ctx.Auth(Map{"id": "u-1"}))
+			},
+		},
+		"profile": {
+			Uri:  "/profile",
+			Kind: "user",
+			Auth: true,
+			Action: func(ctx *Context) {
+				ctx.JSON(Map{"id": ctx.Payload()["id"], "kind": ctx.Kind()})
+			},
+		},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loginResponse := httptest.NewRecorder()
+	server.serveHTTP(loginResponse, httptest.NewRequest(http.MethodGet, "http://example.test/login", nil))
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %q", loginResponse.Code, loginResponse.Body.String())
+	}
+	cookies := loginResponse.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != runtime.AuthCookieName() || cookies[0].Value == "" {
+		t.Fatalf("auth cookie = %#v", cookies)
+	}
+
+	profileRequest := httptest.NewRequest(http.MethodGet, "http://example.test/profile", nil)
+	profileRequest.AddCookie(cookies[0])
+	profileResponse := httptest.NewRecorder()
+	server.serveHTTP(profileResponse, profileRequest)
+	if profileResponse.Code != http.StatusOK || !strings.Contains(profileResponse.Body.String(), `"kind":"user"`) {
+		t.Fatalf("profile response = %d %q", profileResponse.Code, profileResponse.Body.String())
+	}
+
+	adminToken, err := runtime.SignToken(dubi.Token{Auth: true, Kind: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKindRequest := httptest.NewRequest(http.MethodGet, "http://example.test/profile", nil)
+	wrongKindRequest.Header.Set("Authorization", "Bearer "+adminToken)
+	wrongKindResponse := httptest.NewRecorder()
+	server.serveHTTP(wrongKindResponse, wrongKindRequest)
+	if wrongKindResponse.Code != http.StatusForbidden {
+		t.Fatalf("wrong kind status = %d, body = %q", wrongKindResponse.Code, wrongKindResponse.Body.String())
 	}
 }
 

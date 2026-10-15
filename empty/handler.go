@@ -8,7 +8,7 @@ type Handler struct {
 
 func (Handler) Scope() string { return "empty:handler" }
 
-func (m *Instance) RegisterHandler(name string, handler Handler) {
+func (m *Module) RegisterHandler(name string, handler Handler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.handlers == nil {

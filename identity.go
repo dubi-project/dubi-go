@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 )
 
-// Identity describes the process and Runtime configuration scope.
+// Identity describes the process configuration scope.
 type Identity struct {
 	Tenant  string
 	Role    string

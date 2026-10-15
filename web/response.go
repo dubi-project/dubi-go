@@ -20,6 +20,12 @@ import (
 
 type jsonBody struct{ value any }
 type answerBody struct{ result Res }
+type answerEnvelope struct {
+	Code int    `json:"code"`
+	Time int64  `json:"time"`
+	Text string `json:"text,omitempty"`
+	Data *Map   `json:"data,omitempty"`
+}
 type redirectBody struct{ url string }
 type fileBody struct {
 	path string
@@ -127,9 +133,6 @@ func (ctx *Context) closeStreams() {
 }
 
 func (ctx *Context) marshal(value any) ([]byte, error) {
-	if ctx.runtime != nil {
-		return ctx.runtime.Marshal("json", value)
-	}
 	return dubi.Marshal("json", value)
 }
 
@@ -155,21 +158,21 @@ func (ctx *Context) prepare() error {
 			var mapped Map
 			var res Res
 			if ctx.responsePlan != nil {
-				mapped, res = ctx.runtime.ApplyMapping(ctx.responsePlan, data)
+				mapped, res = dubi.ApplyMapping(ctx.responsePlan, data)
 			} else {
-				mapped, res = ctx.runtime.Mapping(ctx.responseVars, data)
+				mapped, res = dubi.Mapping(ctx.responseVars, data)
 			}
 			if res != nil && res.Fail() {
 				return res
 			}
 			data = mapped
 		}
-		value := Map{"code": body.result.Code(), "time": time.Now().Unix()}
+		value := answerEnvelope{Code: body.result.Code(), Time: time.Now().Unix()}
 		if text := ctx.String(body.result.Status(), body.result.Args()...); text != "" {
-			value["text"] = text
+			value.Text = text
 		}
 		if data != nil {
-			value["data"] = data
+			value.Data = &data
 		}
 		encoded, err := ctx.marshal(value)
 		if err != nil {

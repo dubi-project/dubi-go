@@ -129,9 +129,34 @@ web.Router{
 
 HTTP 状态码和 Dubi 业务结果码是两套值。`NotFound`、`Error`、`Failed`、`Unsigned`、`Unauthed`、`Denied` 会设置对应的 HTTP 状态和默认 `Res`；传入自定义 `Res` 时优先使用业务结果。
 
+## 认证
+
+`Router.Sign` 要求请求携带有效 Token，`Router.Auth` 要求 Token 已认证，`Router.Kind` 可进一步限制身份类型。登录路由可以只设置 `Kind`，然后在 Action 中调用 `ctx.Auth`；它会使用当前 Router 的 Kind 生成 Token，并写入 Auth Cookie。
+
+```go
+dubi.Register("login", web.Router{
+	Uri:  "/login",
+	Kind: "user",
+	Action: func(ctx *web.Context) {
+		ctx.JSON(Map{"token": ctx.Auth(Map{"id": "u-1"})})
+	},
+})
+
+dubi.Register("profile", web.Router{
+	Uri:  "/profile",
+	Kind: "user",
+	Auth: true,
+	Action: func(ctx *web.Context) {
+		ctx.JSON(ctx.Payload())
+	},
+})
+```
+
+Token 可以通过 `Authorization: Bearer <token>` 或默认 Cookie 发送。`ctx.Kind()`、`ctx.Authed()` 和 `ctx.Payload()` 只能读取通过验证的 Token。
+
 ## 当前请求能力
 
-`web.Context` 继承 `dubi.Meta`，可以直接调用当前 Runtime 的能力：
+`web.Context` 继承 `dubi.Meta`，可以直接调用当前进程的 Dubi 能力：
 
 ```go
 ctx.String("user.created")

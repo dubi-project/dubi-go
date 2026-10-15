@@ -8,7 +8,7 @@ type Filter struct {
 
 func (Filter) Scope() string { return "empty:filter" }
 
-func (m *Instance) RegisterFilter(name string, filter Filter) {
+func (m *Module) RegisterFilter(name string, filter Filter) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.filters == nil {

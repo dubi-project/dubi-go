@@ -23,7 +23,7 @@ func TestIdentityCommandLineOverridesEnvironment(t *testing.T) {
 }
 
 func TestRuntimeEmptyRunProfileOverridesWithProfile(t *testing.T) {
-	rt := New(WithProfile("missing"))
+	rt := testRuntime(WithProfile("missing"))
 	rt.Register("included", Method{})
 	if err := rt.Run(""); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestRuntimeEmptyRunProfileOverridesWithProfile(t *testing.T) {
 }
 
 func TestRuntimeNodeDefaultsAreShared(t *testing.T) {
-	first, second := New(), New()
+	first, second := testRuntime(), testRuntime()
 	if first.Identity().Node == "" || first.Identity().Node != second.Identity().Node {
 		t.Fatal("runtimes must inherit the same nonempty process node ID")
 	}
@@ -50,7 +50,7 @@ func TestMetaRequestIDsAreUnique(t *testing.T) {
 }
 
 func TestRuntimeIdentityOptionsAndRunProfile(t *testing.T) {
-	rt := New(
+	rt := testRuntime(
 		WithTenant("tenant-a"),
 		WithRole("worker"),
 		WithProfile("default"),
@@ -71,7 +71,7 @@ func TestRuntimeIdentityOptionsAndRunProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rt = New(WithProfile("default"))
+	rt = testRuntime(WithProfile("default"))
 	rt.Register("web", Profile{})
 	if err := rt.Run("web"); err != nil {
 		t.Fatal(err)

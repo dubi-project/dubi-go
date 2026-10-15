@@ -7,13 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	dubi "github.com/dubi-project/dubi-go"
 	. "github.com/dubi-project/dubi-go/base"
 )
 
 func TestPipelineDispatchPreservesRouteRequestValues(t *testing.T) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	err := server.register(
 		map[string]Router{
 			"user": {
@@ -50,7 +48,7 @@ func TestPipelineDispatchPreservesRouteRequestValues(t *testing.T) {
 func TestURLFormParsingPreservesNestedValues(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "http://example.test/", strings.NewReader("user.name=Ada&tags%5B%5D=go&tags%5B%5D=dubi"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	values, files, err := requestFormValues(request, dubi.New())
+	values, files, err := requestFormValues(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +61,7 @@ func TestURLFormParsingPreservesNestedValues(t *testing.T) {
 }
 
 func TestPipelineDispatchPreservesServeMuxMethodMismatch(t *testing.T) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	err := server.register(
 		map[string]Router{
 			"create": {Method: http.MethodPost, Uri: "/items", Action: func(ctx *Context) { ctx.Text("created") }},
@@ -93,8 +90,7 @@ func TestPipelineDispatchPreservesServeMuxMethodMismatch(t *testing.T) {
 }
 
 func TestPipelineDispatchPreservesMultiSegmentPathValue(t *testing.T) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{Name: defaultServerName}, runtime, map[string]struct{}{defaultServerName: {}})
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
 	err := server.register(map[string]Router{
 		"files": {
 			Uri: "/files/{path...}",
@@ -121,12 +117,31 @@ func TestPipelineDispatchPreservesMultiSegmentPathValue(t *testing.T) {
 	}
 }
 
+func TestPipelineDispatchExtractsMultiplePathValues(t *testing.T) {
+	server := newServerState(ServerConfig{Name: defaultServerName}, map[string]struct{}{defaultServerName: {}})
+	if err := server.register(map[string]Router{
+		"post": {
+			Uri: "/users/{user}/posts/{post}",
+			Action: func(ctx *Context) {
+				ctx.JSON(Map{"user": ctx.Params["user"], "post": ctx.Params["post"]})
+			},
+		},
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/users/u-1/posts/p-2", nil)
+	response := httptest.NewRecorder()
+	server.serveHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != `{"post":"p-2","user":"u-1"}` {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestServerMaxConcurrencyRejectsOverload(t *testing.T) {
-	runtime := dubi.New()
-	server := newServerRuntime(ServerConfig{
+	server := newServerState(ServerConfig{
 		Name:           defaultServerName,
 		MaxConcurrency: 1,
-	}, runtime, map[string]struct{}{defaultServerName: {}})
+	}, map[string]struct{}{defaultServerName: {}})
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	if err := server.register(map[string]Router{

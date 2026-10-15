@@ -15,24 +15,18 @@ func init() {
 }
 
 func main() {
-	runtime := dubi.DefaultRuntime()
 	ctx := context.Background()
 
-	if err := runtime.Setup(ctx); err != nil {
+	if err := dubi.Setup(ctx); err != nil {
 		log.Fatal(err)
 	}
-	if err := runtime.Open(ctx); err != nil {
+	if err := dubi.Open(ctx); err != nil {
 		log.Fatal(err)
 	}
-	if err := runtime.Start(ctx); err != nil {
+	if err := dubi.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := runtime.Stop(ctx); err != nil {
-			log.Print(err)
-		}
-		if err := runtime.Close(ctx); err != nil {
-			log.Print(err)
-		}
-	}()
+	if err := dubi.Wait(); err != nil {
+		log.Fatal(err)
+	}
 }

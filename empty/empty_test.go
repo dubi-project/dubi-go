@@ -8,9 +8,10 @@ import (
 )
 
 func TestEmptyCanBeRegisteredAndLoaded(t *testing.T) {
+	dubi.Reset()
+	rt := dubi.DefaultRuntime()
 	dubi.Register("filter", Filter{})
 	dubi.Register("handler", Handler{})
-	rt := dubi.NewRuntime()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := rt.Setup(ctx); err != nil {

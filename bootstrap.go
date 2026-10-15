@@ -7,7 +7,7 @@ import (
 	. "github.com/dubi-project/dubi-go/base"
 )
 
-// Bootstrap contains the information needed before a Runtime can connect to
+// Bootstrap contains the information needed before the process can connect to
 // Dubi and load its full configuration.
 type Bootstrap struct {
 	Endpoints []string

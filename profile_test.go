@@ -9,7 +9,7 @@ import (
 )
 
 func TestConfiguredProfilesFilterAndInherit(t *testing.T) {
-	rt := NewRuntime()
+	rt := testRuntime()
 	rt.config = Map{
 		"profiles": Map{
 			"base": Map{

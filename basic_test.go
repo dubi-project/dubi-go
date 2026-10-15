@@ -8,7 +8,7 @@ import (
 )
 
 func TestMappingUsesRuntimeTypesAndAliases(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	rt.Register("positive", Type{
 		Valid: func(value Any, _ Var) bool {
 			switch n := value.(type) {
@@ -82,7 +82,7 @@ func TestMappingNestedValuesAcceptTypedSlicesAndMaps(t *testing.T) {
 }
 
 func TestPreparedMappingReusesCompiledDefinition(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	definition := Vars{
 		"id":   {Type: "int", Required: true},
 		"name": {Type: "string"},
@@ -200,7 +200,7 @@ func TestMappingIsDeterministicAndPreservesOptionalNil(t *testing.T) {
 }
 
 func TestRuntimeLanguageSelection(t *testing.T) {
-	rt := New()
+	rt := testRuntime()
 	rt.Register("zh-CN", Language{
 		Accepts: []string{"zh", "zh-CN"},
 		Strings: Map{"hello_world": "你好，%s"},
@@ -215,7 +215,7 @@ func TestRuntimeLanguageSelection(t *testing.T) {
 	if got := rt.String("zh-CN", "hello.world", "Dubi"); got != "你好，Dubi" {
 		t.Fatalf("translation = %q", got)
 	}
-	meta := NewMeta(rt)
+	meta := NewMeta()
 	meta.Language("zh-CN")
 	if got := meta.String("hello.world", "Dubi"); got != "你好，Dubi" {
 		t.Fatalf("meta translation = %q", got)
@@ -230,7 +230,7 @@ func TestResultRegistersStatusAndLanguageText(t *testing.T) {
 	if got := invalidEmail.With("email").Error(); got != "无效电子邮箱: email" {
 		t.Fatalf("result text = %q", got)
 	}
-	rt := New()
+	rt := testRuntime()
 	if err := rt.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}

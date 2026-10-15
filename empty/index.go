@@ -16,14 +16,8 @@ func init() {
 // Host returns the host created when this package was mounted.
 func Host() dubi.Host { return host }
 
-// Counts reports the number of registered example components in the most
-// recently created Runtime instance.
+// Counts reports the number of registered example components in the process
+// module.
 func Counts() (filters, handlers int) {
-	mu.RLock()
-	instance := last
-	mu.RUnlock()
-	if instance == nil {
-		return 0, 0
-	}
-	return instance.Counts()
+	return module.Counts()
 }

@@ -25,10 +25,11 @@ func (e Entry) Key() string {
 }
 
 // Registry stores modules, services, routes, profiles, and application
-// registrations. A Registry can be shared by multiple Runtime instances.
+// registrations. The package-level Registry is the process registry.
 type Registry struct {
-	mu    sync.RWMutex
-	items map[string]any
+	mu     sync.RWMutex
+	items  map[string]any
+	frozen bool
 }
 
 func NewRegistry() *Registry {
@@ -46,10 +47,46 @@ func (r *Registry) Register(name string, value any) {
 		panic("dubi: cannot register nil value")
 	}
 	r.mu.Lock()
+	if r.frozen {
+		r.mu.Unlock()
+		panic("dubi: registry is frozen")
+	}
 	if r.items == nil {
 		r.items = make(map[string]any)
 	}
 	r.items[name] = value
+	r.mu.Unlock()
+}
+
+// Freeze prevents registrations from changing after process setup has begun.
+// A frozen registry remains readable and can be replaced by the process reset
+// path used by embedded hosts and tests.
+func (r *Registry) Freeze() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.frozen = true
+	r.mu.Unlock()
+}
+
+// Frozen reports whether this registry accepts new registrations.
+func (r *Registry) Frozen() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	frozen := r.frozen
+	r.mu.RUnlock()
+	return frozen
+}
+
+func (r *Registry) unfreeze() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.frozen = false
 	r.mu.Unlock()
 }
 
@@ -98,9 +135,8 @@ func normalizeName(name string) string {
 
 var globalRegistry = NewRegistry()
 
-// Register adds any registration, including Profile values, to the
-// process-wide registry. Profiles are metadata and are separated by Runtime
-// when it builds its component entries.
+// Register adds any registration, including Profile values, to the process
+// registry. Profiles are metadata and are selected by Run.
 func Register(name string, value any) {
 	globalRegistry.Register(name, value)
 }
