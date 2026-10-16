@@ -134,12 +134,92 @@ func (i *Module) Register(name string, value any) {
 			i.filters[name] = *item
 			i.enabled = true
 		}
+	case ServeFilter:
+		i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Serve: item.Action}
+		i.enabled = true
+	case *ServeFilter:
+		if item != nil {
+			i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Serve: item.Action}
+			i.enabled = true
+		}
+	case RequestFilter:
+		i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Request: item.Action}
+		i.enabled = true
+	case *RequestFilter:
+		if item != nil {
+			i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Request: item.Action}
+			i.enabled = true
+		}
+	case ExecuteFilter:
+		i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Execute: item.Action}
+		i.enabled = true
+	case *ExecuteFilter:
+		if item != nil {
+			i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Execute: item.Action}
+			i.enabled = true
+		}
+	case ResponseFilter:
+		i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Response: item.Action}
+		i.enabled = true
+	case *ResponseFilter:
+		if item != nil {
+			i.filters[name] = Filter{Name: item.Name, Desc: item.Desc, Response: item.Action}
+			i.enabled = true
+		}
 	case Handler:
 		i.handlers[name] = item
 		i.enabled = true
 	case *Handler:
 		if item != nil {
 			i.handlers[name] = *item
+			i.enabled = true
+		}
+	case NotFoundHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, NotFound: item.Action}
+		i.enabled = true
+	case *NotFoundHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, NotFound: item.Action}
+			i.enabled = true
+		}
+	case ErrorHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Error: item.Action}
+		i.enabled = true
+	case *ErrorHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Error: item.Action}
+			i.enabled = true
+		}
+	case FailedHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Failed: item.Action}
+		i.enabled = true
+	case *FailedHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Failed: item.Action}
+			i.enabled = true
+		}
+	case UnsignedHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Unsigned: item.Action}
+		i.enabled = true
+	case *UnsignedHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Unsigned: item.Action}
+			i.enabled = true
+		}
+	case UnauthedHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Unauthed: item.Action}
+		i.enabled = true
+	case *UnauthedHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Unauthed: item.Action}
+			i.enabled = true
+		}
+	case DeniedHandler:
+		i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Denied: item.Action}
+		i.enabled = true
+	case *DeniedHandler:
+		if item != nil {
+			i.handlers[name] = Handler{Name: item.Name, Desc: item.Desc, Denied: item.Action}
 			i.enabled = true
 		}
 	}

@@ -160,7 +160,7 @@ func Endpoints() []string { return DefaultRuntime().Endpoints() }
 func (rt *Runtime) Auth() Map {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return rt.bootstrap.Auth.Clone()
+	return cloneConfigMap(rt.bootstrap.Auth)
 }
 
 func Auth() Map { return DefaultRuntime().Auth() }
@@ -186,18 +186,33 @@ func (rt *Runtime) Run(profile ...string) error {
 		rt.identity.Profile = strings.TrimSpace(profile[0])
 		rt.profileSet = true
 	}
+	// Publish the runtime before setup begins so a concurrent package-level
+	// Wait observes the in-progress startup instead of returning early.
+	runtimeManager.add(rt)
 	rt.mu.Unlock()
 	ctx := context.Background()
 	if err := rt.Setup(ctx); err != nil {
-		return err
+		return rt.rollbackStartup(err)
 	}
 	if err := rt.Open(ctx); err != nil {
-		return err
+		return rt.rollbackStartup(err)
 	}
 	if err := rt.Start(ctx); err != nil {
-		return err
+		return rt.rollbackStartup(err)
 	}
 	return nil
+}
+
+func (rt *Runtime) rollbackStartup(runErr error) error {
+	cleanupErr := rt.shutdown(context.Background())
+	runtimeManager.remove(rt)
+	globalRegistry.unfreeze()
+	unfreezeModules()
+	rt.resetLifecycle(stateNew)
+	if cleanupErr != nil {
+		return fmt.Errorf("%w (cleanup failed: %v)", runErr, cleanupErr)
+	}
+	return runErr
 }
 
 // Run starts the process-wide default runtime.
@@ -347,7 +362,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 			return err
 		}
 	}
-	config := rt.config.Clone()
+	config := cloneConfigMap(rt.config)
 	profileName := rt.identity.Profile
 	rt.mu.Unlock()
 	merged := make(map[string]any)
@@ -400,10 +415,9 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	rt.entries = selected
 	rt.mu.Unlock()
 	modules := globalModules()
-	base := rt.lifecycleContext(ctx)
 	for _, module := range modules {
 		name := moduleName(module)
-		if err := module.Config(config.Clone()); err != nil {
+		if err := module.Config(cloneConfigMap(config)); err != nil {
 			return fmt.Errorf("dubi: config %q: %w", name, err)
 		}
 	}
@@ -413,9 +427,10 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 		}
 	}
 	for _, module := range modules {
-		base.Name = moduleName(module)
-		if err := module.Setup(base); err != nil {
-			return fmt.Errorf("dubi: setup %q: %w", base.Name, err)
+		moduleContext := rt.lifecycleContext(ctx)
+		moduleContext.Name = moduleName(module)
+		if err := module.Setup(moduleContext); err != nil {
+			return fmt.Errorf("dubi: setup %q: %w", moduleContext.Name, err)
 		}
 	}
 	setupOK = true
@@ -445,7 +460,7 @@ func isFoundationEntry(entry Entry) bool {
 func (rt *Runtime) Config() Map {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return rt.config.Clone()
+	return cloneConfigMap(rt.config)
 }
 
 func Config() Map { return DefaultRuntime().Config() }
@@ -466,17 +481,19 @@ func (rt *Runtime) Open(ctx context.Context) error {
 	if err := rt.beginLifecycle("open", stateSetup); err != nil {
 		return err
 	}
-	base := rt.lifecycleContext(ctx)
 	modules := globalModules()
 	opened := 0
 	for _, module := range modules {
-		base.Name = moduleName(module)
-		if err := module.Open(base); err != nil {
+		moduleContext := rt.lifecycleContext(ctx)
+		moduleContext.Name = moduleName(module)
+		if err := module.Open(moduleContext); err != nil {
 			for j := opened - 1; j >= 0; j-- {
-				_ = modules[j].Close(base)
+				closeContext := rt.lifecycleContext(ctx)
+				closeContext.Name = moduleName(modules[j])
+				_ = modules[j].Close(closeContext)
 			}
 			rt.finishLifecycle(stateSetup)
-			return fmt.Errorf("dubi: open %q: %w", base.Name, err)
+			return fmt.Errorf("dubi: open %q: %w", moduleContext.Name, err)
 		}
 		opened++
 	}
@@ -494,17 +511,19 @@ func (rt *Runtime) start(ctx context.Context) error {
 	if err := rt.beginLifecycle("start", stateOpen); err != nil {
 		return err
 	}
-	base := rt.lifecycleContext(ctx)
 	modules := globalModules()
 	started := 0
 	for _, module := range modules {
-		base.Name = moduleName(module)
-		if err := module.Start(base); err != nil {
+		moduleContext := rt.lifecycleContext(ctx)
+		moduleContext.Name = moduleName(module)
+		if err := module.Start(moduleContext); err != nil {
 			for j := started - 1; j >= 0; j-- {
-				_ = modules[j].Stop(base)
+				stopContext := rt.lifecycleContext(ctx)
+				stopContext.Name = moduleName(modules[j])
+				_ = modules[j].Stop(stopContext)
 			}
 			rt.finishLifecycle(stateOpen)
-			return fmt.Errorf("dubi: start %q: %w", base.Name, err)
+			return fmt.Errorf("dubi: start %q: %w", moduleContext.Name, err)
 		}
 		started++
 	}
@@ -521,13 +540,13 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	if err := rt.beginLifecycle("stop", stateStarted); err != nil {
 		return err
 	}
-	base := rt.lifecycleContext(ctx)
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {
-		base.Name = moduleName(modules[i])
-		if err := modules[i].Stop(base); err != nil && first == nil {
-			first = fmt.Errorf("dubi: stop %q: %w", base.Name, err)
+		moduleContext := rt.lifecycleContext(ctx)
+		moduleContext.Name = moduleName(modules[i])
+		if err := modules[i].Stop(moduleContext); err != nil && first == nil {
+			first = fmt.Errorf("dubi: stop %q: %w", moduleContext.Name, err)
 		}
 	}
 	rt.finishLifecycle(stateStopped)
@@ -539,13 +558,13 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	if err := rt.beginLifecycle("close", stateStopped, stateOpen, stateSetup); err != nil {
 		return err
 	}
-	base := rt.lifecycleContext(ctx)
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {
-		base.Name = moduleName(modules[i])
-		if err := modules[i].Close(base); err != nil && first == nil {
-			first = fmt.Errorf("dubi: close %q: %w", base.Name, err)
+		moduleContext := rt.lifecycleContext(ctx)
+		moduleContext.Name = moduleName(modules[i])
+		if err := modules[i].Close(moduleContext); err != nil && first == nil {
+			first = fmt.Errorf("dubi: close %q: %w", moduleContext.Name, err)
 		}
 	}
 	rt.finishLifecycle(stateClosed)
@@ -556,9 +575,9 @@ func normalizeScope(scope string) string {
 	return strings.Trim(strings.ToLower(scope), ". ")
 }
 
-// lifecycleContext gives every module lifecycle callback the same process
-// Meta facade. Modules can use ctx.Marshal, ctx.Mapping, ctx.String and
-// ctx.Invoke without reaching into Runtime directly.
+// lifecycleContext gives one module lifecycle callback a process Meta facade.
+// Modules can use ctx.Marshal, ctx.Mapping, ctx.String and ctx.Invoke without
+// reaching into Runtime directly.
 func (rt *Runtime) lifecycleContext(ctx context.Context) *Context {
 	if ctx == nil {
 		ctx = context.Background()

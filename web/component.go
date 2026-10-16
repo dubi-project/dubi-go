@@ -191,22 +191,120 @@ func cloneLoading(values Loading) Loading {
 
 // Filter contains request pipeline hooks. A hook may call Context.Next.
 type Filter struct {
-	Serve    func(*Context)
-	Request  func(*Context)
-	Execute  func(*Context)
-	Response func(*Context)
+	Name     string         `json:"name"`
+	Desc     string         `json:"desc"`
+	Serve    func(*Context) `json:"-"`
+	Request  func(*Context) `json:"-"`
+	Execute  func(*Context) `json:"-"`
+	Response func(*Context) `json:"-"`
 }
 
 func (Filter) Scope() string { return "web:filter" }
 
+// ServeFilter runs at the outermost request stage, before route lookup.
+// Action may call Context.Next to continue the request pipeline.
+type ServeFilter struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (ServeFilter) Scope() string { return "web:filter" }
+
+// RequestFilter runs after the request has entered a site and before route
+// execution. Action may call Context.Next to continue the request pipeline.
+type RequestFilter struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (RequestFilter) Scope() string { return "web:filter" }
+
+// ExecuteFilter runs around route execution. Action may call Context.Next to
+// continue the request pipeline.
+type ExecuteFilter struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (ExecuteFilter) Scope() string { return "web:filter" }
+
+// ResponseFilter runs after route execution and outcome handling. Action may
+// call Context.Next to continue the response pipeline.
+type ResponseFilter struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (ResponseFilter) Scope() string { return "web:filter" }
+
 // Handler handles common HTTP outcomes such as not found and errors.
 type Handler struct {
-	NotFound func(*Context)
-	Error    func(*Context)
-	Failed   func(*Context)
-	Unsigned func(*Context)
-	Unauthed func(*Context)
-	Denied   func(*Context)
+	Name     string         `json:"name"`
+	Desc     string         `json:"desc"`
+	NotFound func(*Context) `json:"-"`
+	Error    func(*Context) `json:"-"`
+	Failed   func(*Context) `json:"-"`
+	Unsigned func(*Context) `json:"-"`
+	Unauthed func(*Context) `json:"-"`
+	Denied   func(*Context) `json:"-"`
 }
 
 func (Handler) Scope() string { return "web:handler" }
+
+// NotFoundHandler handles a route that could not be found.
+type NotFoundHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (NotFoundHandler) Scope() string { return "web:handler" }
+
+// ErrorHandler handles an internal request error.
+type ErrorHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (ErrorHandler) Scope() string { return "web:handler" }
+
+// FailedHandler handles a request that failed validation or processing.
+type FailedHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (FailedHandler) Scope() string { return "web:handler" }
+
+// UnsignedHandler handles a request that requires a valid signature.
+type UnsignedHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (UnsignedHandler) Scope() string { return "web:handler" }
+
+// UnauthedHandler handles a request that requires authentication.
+type UnauthedHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (UnauthedHandler) Scope() string { return "web:handler" }
+
+// DeniedHandler handles an authenticated request that lacks permission.
+type DeniedHandler struct {
+	Name   string         `json:"name"`
+	Desc   string         `json:"desc"`
+	Action func(*Context) `json:"-"`
+}
+
+func (DeniedHandler) Scope() string { return "web:handler" }

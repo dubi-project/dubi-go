@@ -2,7 +2,6 @@ package dubi
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -48,7 +47,8 @@ func (m *runtimeRegistry) snapshot() (*Runtime, <-chan struct{}) {
 }
 
 // Wait blocks until the process runtime ends. SIGINT and SIGTERM end it before
-// Wait returns.
+// Wait returns. If startup or shutdown is in progress, Wait follows the
+// lifecycle transition instead of reporting a transient state error.
 func Wait() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -57,8 +57,18 @@ func Wait() error {
 		if rt == nil {
 			return nil
 		}
+		// A Runtime may be visible in the manager before Run has completed its
+		// setup. Wait for that transition to publish either a started runtime or
+		// a removed runtime instead of returning a transient error.
 		if transition := rt.lifecycleTransition(); transition != "" {
-			return fmt.Errorf("dubi: wait called while %s is running", transition)
+			select {
+			case <-ctx.Done():
+				// A lifecycle callback may be blocked and cannot be safely
+				// interrupted by End while its transition lock is held.
+				return ctx.Err()
+			case <-wake:
+				continue
+			}
 		}
 		select {
 		case <-ctx.Done():

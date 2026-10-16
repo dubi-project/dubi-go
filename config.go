@@ -160,6 +160,55 @@ func normalizeConfigValue(value any) any {
 	}
 }
 
+// cloneConfigMap makes a detached configuration snapshot. Configuration is
+// dynamic by design, so a shallow map copy would still let one module mutate a
+// nested section observed by another module or by Runtime.Config.
+func cloneConfigMap(value Map) Map {
+	if value == nil {
+		return nil
+	}
+	out := make(Map, len(value))
+	for key, item := range value {
+		out[key] = cloneConfigValue(item)
+	}
+	return out
+}
+
+func cloneConfigValue(value any) any {
+	switch item := value.(type) {
+	case Map:
+		return cloneConfigMap(item)
+	case map[string]any:
+		out := make(map[string]any, len(item))
+		for key, value := range item {
+			out[key] = cloneConfigValue(value)
+		}
+		return out
+	case map[any]any:
+		out := make(map[any]any, len(item))
+		for key, value := range item {
+			out[key] = cloneConfigValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(item))
+		for index, value := range item {
+			out[index] = cloneConfigValue(value)
+		}
+		return out
+	case []string:
+		return append([]string(nil), item...)
+	case []Map:
+		out := make([]Map, len(item))
+		for index, value := range item {
+			out[index] = cloneConfigMap(value)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 func mergeConfig(dst, src Map) {
 	for key, value := range src {
 		if left, ok := dst[key].(Map); ok {

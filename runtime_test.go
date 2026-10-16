@@ -2,9 +2,11 @@ package dubi
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 import . "github.com/dubi-project/dubi-go/base"
@@ -14,6 +16,9 @@ type testModule struct {
 	metaGood       bool
 	setupReentrant bool
 	reentrantError error
+	openError      error
+	startError     error
+	mutateContext  bool
 }
 
 func (m *testModule) Reset() {
@@ -21,6 +26,9 @@ func (m *testModule) Reset() {
 	m.metaGood = false
 	m.setupReentrant = false
 	m.reentrantError = nil
+	m.openError = nil
+	m.startError = nil
+	m.mutateContext = false
 }
 func (m *testModule) Register(string, any) {}
 func (m *testModule) Config(Map) error {
@@ -29,6 +37,9 @@ func (m *testModule) Config(Map) error {
 }
 func (m *testModule) Setup(ctx *Context) error {
 	m.metaGood = ctx != nil && ctx.Meta != nil && ctx.Meta.Context() != nil
+	if m.mutateContext && ctx != nil {
+		ctx.Name = "mutated-by-test-module"
+	}
 	if m.setupReentrant {
 		m.reentrantError = DefaultRuntime().Open(context.Background())
 	}
@@ -37,10 +48,16 @@ func (m *testModule) Setup(ctx *Context) error {
 }
 func (m *testModule) Open(*Context) error {
 	m.state = append(m.state, "open")
+	if m.openError != nil {
+		return m.openError
+	}
 	return nil
 }
 func (m *testModule) Start(*Context) error {
 	m.state = append(m.state, "start")
+	if m.startError != nil {
+		return m.startError
+	}
 	return nil
 }
 func (m *testModule) Stop(*Context) error {
@@ -55,11 +72,20 @@ func (m *testModule) Close(*Context) error {
 type receivingModule struct {
 	testModule
 	registered []string
+	setupName  string
 }
 
 func (m *receivingModule) Reset() {
 	m.testModule.Reset()
 	m.registered = nil
+	m.setupName = ""
+}
+
+func (m *receivingModule) Setup(ctx *Context) error {
+	if ctx != nil {
+		m.setupName = ctx.Name
+	}
+	return m.testModule.Setup(ctx)
 }
 func (m *receivingModule) Register(name string, _ any) {
 	m.registered = append(m.registered, name)
@@ -232,6 +258,97 @@ func TestRuntimeRunAndEnd(t *testing.T) {
 	}
 	if err := rt.End(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeStartupFailureRollsBackAndCanRetry(t *testing.T) {
+	for _, phase := range []string{"open", "start"} {
+		t.Run(phase, func(t *testing.T) {
+			rt := testRuntime()
+			if phase == "open" {
+				testLifecycleModule.openError = errors.New("open failed")
+			} else {
+				testLifecycleModule.startError = errors.New("start failed")
+			}
+			if err := rt.Run(); err == nil {
+				t.Fatal("Run unexpectedly succeeded")
+			}
+			if rt.state != stateNew {
+				t.Fatalf("runtime state after failed Run = %v, want new", rt.state)
+			}
+			if active, _ := runtimeManager.snapshot(); active != nil {
+				t.Fatalf("failed Run left active runtime: %p", active)
+			}
+
+			testLifecycleModule.openError = nil
+			testLifecycleModule.startError = nil
+			if err := rt.Run(); err != nil {
+				t.Fatalf("retry Run failed: %v", err)
+			}
+			if err := rt.End(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRuntimeConfigIsDeeplyCopied(t *testing.T) {
+	rt := testRuntime()
+	rt.config = Map{
+		"web": Map{
+			"site":    Map{"host": "example.test"},
+			"headers": []any{Map{"name": "x-request-id"}},
+		},
+	}
+	rt.configLoaded = true
+	copyOf := rt.Config()
+	copyOf["web"].(Map)["site"].(Map)["host"] = "changed.test"
+	copyOf["web"].(Map)["headers"].([]any)[0].(Map)["name"] = "changed"
+	original := rt.config["web"].(Map)
+	if original["site"].(Map)["host"] != "example.test" {
+		t.Fatalf("nested config was shared: %#v", original)
+	}
+	if original["headers"].([]any)[0].(Map)["name"] != "x-request-id" {
+		t.Fatalf("nested config slice was shared: %#v", original)
+	}
+}
+
+func TestLifecycleContextsAreIndependent(t *testing.T) {
+	rt := testRuntime()
+	testLifecycleModule.mutateContext = true
+	if err := rt.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close(context.Background())
+	if got, want := testReceiverModule.setupName, moduleName(testReceiverModule); got != want {
+		t.Fatalf("receiver setup context name = %q, want %q", got, want)
+	}
+}
+
+func TestWaitFollowsLifecycleTransition(t *testing.T) {
+	rt := testRuntime()
+	rt.mu.Lock()
+	rt.transition = "start"
+	rt.mu.Unlock()
+	runtimeManager.add(rt)
+	done := make(chan error, 1)
+	go func() { done <- Wait() }()
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned during transition: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	rt.mu.Lock()
+	rt.transition = ""
+	rt.mu.Unlock()
+	runtimeManager.remove(rt)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Wait returned error after transition: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not observe runtime removal")
 	}
 }
 
