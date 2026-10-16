@@ -33,6 +33,39 @@ available when a test or embedded host needs individual lifecycle phases.
 
 The Web entry module is documented in [`web`](web/README.md).
 
+The Data module is included as a single package. Import it for its process
+module registration, then select one of the built-in database types in the
+configuration; there is no application-level type registry:
+
+```go
+import _ "github.com/dubi-project/dubi-go/data"
+```
+
+```yaml
+data:
+  default:
+    type: sqlite # sqlite, mysql, pgsql, or mongodb
+    url: file:app.db
+```
+
+For one connection, `data` may use `type`, `url`, and the other connection
+options directly. For more than one connection, put named connection objects
+under `data.connections` (or use named keys such as `default` and `analytics`).
+Every connection must name its type explicitly; SQLite is not selected
+implicitly when the type is missing.
+
+The API keeps the concise infrago-style form:
+
+```go
+db := data.Base()
+defer db.Close()
+users := db.Table("users")
+users.Insert(base.Map{"name": "alice"})
+if err := db.Error(); err != nil {
+    // Error is a stable read; the next database call clears it.
+}
+```
+
 Authentication is built into the process runtime. `web.Router` can require a signed
 and/or authenticated Token, and `Router.Kind` limits the identity type:
 
