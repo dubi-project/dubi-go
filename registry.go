@@ -28,16 +28,20 @@ func (e Entry) Key() string {
 // registrations. The package-level Registry is the process registry.
 type Registry struct {
 	mu       sync.RWMutex
-	items    map[string]any
+	items    map[registryKey]any
+	latest   map[string]registryKey
 	triggers map[string][]any
 	frozen   bool
 }
 
+type registryKey struct{ scope, name string }
+
 func NewRegistry() *Registry {
-	return &Registry{items: make(map[string]any)}
+	return &Registry{items: make(map[registryKey]any), latest: make(map[string]registryKey)}
 }
 
-// Register adds or replaces an ordinary registration. Trigger registrations
+// Register adds or replaces an ordinary registration with the same scope and
+// name. Registrations with different scopes coexist. Trigger registrations
 // append under their logical name so independent packages can listen together.
 func (r *Registry) Register(name string, value any) {
 	if r == nil {
@@ -50,13 +54,17 @@ func (r *Registry) Register(name string, value any) {
 	if trigger, ok := value.(*Trigger); ok && trigger == nil {
 		panic("dubi: cannot register nil trigger")
 	}
+	key := registryKey{scope: registrationScope(value), name: name}
 	r.mu.Lock()
 	if r.frozen {
 		r.mu.Unlock()
 		panic("dubi: registry is frozen")
 	}
 	if r.items == nil {
-		r.items = make(map[string]any)
+		r.items = make(map[registryKey]any)
+	}
+	if r.latest == nil {
+		r.latest = make(map[string]registryKey)
 	}
 	if isTrigger(value) {
 		if r.triggers == nil {
@@ -64,7 +72,8 @@ func (r *Registry) Register(name string, value any) {
 		}
 		r.triggers[name] = append(r.triggers[name], value)
 	} else {
-		r.items[name] = value
+		r.items[key] = value
+		r.latest[name] = key
 	}
 	r.mu.Unlock()
 }
@@ -101,14 +110,19 @@ func (r *Registry) unfreeze() {
 	r.mu.Unlock()
 }
 
-// Lookup returns the ordinary registration, or the latest Trigger if no
-// ordinary registration uses the name. Entries exposes every Trigger listener.
+// Lookup returns the latest ordinary registration with this logical name,
+// or the latest Trigger if there is no ordinary registration. Use LookupScope
+// when a name may belong to more than one component.
 func (r *Registry) Lookup(name string) (any, bool) {
 	if r == nil {
 		return nil, false
 	}
 	r.mu.RLock()
-	v, ok := r.items[name]
+	key, ok := r.latest[name]
+	var v any
+	if ok {
+		v, ok = r.items[key]
+	}
 	if !ok {
 		if listeners := r.triggers[name]; len(listeners) > 0 {
 			v, ok = listeners[len(listeners)-1], true
@@ -118,14 +132,32 @@ func (r *Registry) Lookup(name string) (any, bool) {
 	return v, ok
 }
 
+// LookupScope returns the registration for one component scope and logical
+// name. For Triggers it returns the latest listener; Entries returns all of them.
+func (r *Registry) LookupScope(scope, name string) (any, bool) {
+	if r == nil {
+		return nil, false
+	}
+	scope = normalizeScope(scope)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	v, ok := r.items[registryKey{scope: scope, name: name}]
+	if !ok && scope == "core:trigger" {
+		if listeners := r.triggers[name]; len(listeners) > 0 {
+			return listeners[len(listeners)-1], true
+		}
+	}
+	return v, ok
+}
+
 func (r *Registry) Entries() []Entry {
 	if r == nil {
 		return nil
 	}
 	r.mu.RLock()
 	entries := make([]Entry, 0, len(r.items))
-	for name, value := range r.items {
-		entries = append(entries, Entry{Name: name, Value: value, Scope: registrationScope(value)})
+	for key, value := range r.items {
+		entries = append(entries, Entry{Name: key.name, Value: value, Scope: key.scope})
 	}
 	for name, listeners := range r.triggers {
 		for _, value := range listeners {
@@ -133,7 +165,12 @@ func (r *Registry) Entries() []Entry {
 		}
 	}
 	r.mu.RUnlock()
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Name != entries[j].Name {
+			return entries[i].Name < entries[j].Name
+		}
+		return entries[i].Scope < entries[j].Scope
+	})
 	return entries
 }
 
@@ -158,13 +195,41 @@ func normalizeName(name string) string {
 
 var globalRegistry = NewRegistry()
 
+// RegistrationSet expands a collection into individual named registrations.
+type RegistrationSet interface {
+	Registrations() map[string]any
+}
+
 // Register adds any registration, including Profile values, to the process
-// registry. Profiles are metadata and are selected by Run.
-func Register(name string, value any) {
-	globalRegistry.Register(name, value)
+// registry. A RegistrationSet can be passed alone to register its entries.
+// Profiles are metadata and are selected by Run.
+func Register(nameOrSet any, values ...any) {
+	if len(values) == 0 {
+		if set, ok := nameOrSet.(RegistrationSet); ok {
+			entries := set.Registrations()
+			names := make([]string, 0, len(entries))
+			for name := range entries {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				globalRegistry.Register(name, entries[name])
+			}
+			return
+		}
+		panic("dubi: Register requires a name and value or a registration set")
+	}
+	name, ok := nameOrSet.(string)
+	if !ok || len(values) != 1 {
+		panic("dubi: Register requires a name and value or a registration set")
+	}
+	globalRegistry.Register(name, values[0])
 }
 
 func Lookup(name string) (any, bool) { return globalRegistry.Lookup(name) }
+
+// LookupScope finds a registration by component scope and logical name.
+func LookupScope(scope, name string) (any, bool) { return globalRegistry.LookupScope(scope, name) }
 
 func (r *Registry) String() string {
 	if r == nil {

@@ -46,3 +46,11 @@ type (
 		Settings Map
 	}
 )
+
+func (Table) Scope() string { return "data:table" }
+func (View) Scope() string  { return "data:view" }
+func (Model) Scope() string { return "data:model" }
+
+func (Table) Foundation() bool { return true }
+func (View) Foundation() bool  { return true }
+func (Model) Foundation() bool { return true }

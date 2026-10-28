@@ -19,7 +19,8 @@ type Library struct {
 	Methods  Methods
 }
 
-func (Library) Scope() string { return "core:library" }
+func (Library) Scope() string    { return "core:library" }
+func (Library) Foundation() bool { return true }
 
 // LibraryInvoker binds one Library's settings to a request Meta. Create a new
 // invoker per request; the invoker and its Meta retain the latest call result.

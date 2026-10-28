@@ -82,10 +82,22 @@ func (m *Module) Register(name string, value Any) {
 		m.RegisterConfigs(v)
 	case Table:
 		m.RegisterTable(name, v)
+	case *Table:
+		if v != nil {
+			m.RegisterTable(name, *v)
+		}
 	case View:
 		m.RegisterView(name, v)
+	case *View:
+		if v != nil {
+			m.RegisterView(name, *v)
+		}
 	case Model:
 		m.RegisterModel(name, v)
+	case *Model:
+		if v != nil {
+			m.RegisterModel(name, *v)
+		}
 	case Migration:
 		m.RegisterMigration(name, v)
 	case Watcher:

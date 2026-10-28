@@ -23,6 +23,10 @@ func init() {
 - 省略名称时，以前缀本身为注册名称，例如 `user.Register(dubi.Library{...})`。
 - 空前缀可用于不添加前缀的注册，注册名称仍不能为空。
 - `Register(args ...any)` 的最后一个字符串参数作为名称，其他参数作为注册值。
-  普通组件同名覆盖，最终保留最后一个值；Trigger 同名追加为多个监听器。
+  普通组件在 Scope 和名称都相同时覆盖；不同 Scope 的同名组件可以共存。
+  Trigger 同名追加为多个监听器。
+
+`dubi.Lookup(name)` 返回该名称最近注册的普通组件；需要明确类型时，使用
+`dubi.LookupScope("data:table", name)` 按组件 Scope 和逻辑名称查找。
 
 所有注册仍写入同一个全局 Registry，启动后受相同的冻结规则约束。

@@ -7,7 +7,8 @@ import (
 )
 
 // Profile selects registrations for one process role. An empty Include list
-// means all entries are eligible. Exclude always wins over Include.
+// means all entries are eligible. For non-foundation entries, Exclude wins
+// over Include. Foundation resources are always loaded.
 type Profile struct {
 	Include  []string
 	Exclude  []string

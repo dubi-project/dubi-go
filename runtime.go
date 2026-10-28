@@ -401,11 +401,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	}
 	selected := make([]Entry, 0, len(all))
 	for _, entry := range all {
-		// Basic, codec, and library registrations describe the process foundation. They
-		// are always delivered to their module, even when a Profile selects a
-		// smaller set of business components. A Profile chooses entry modules;
-		// it does not make JSON, types, MIME values, status text, or custom
-		// codecs or reusable local Libraries disappear from the process.
+		// Foundation resources are shared across all profiles.
 		if active == nil || isFoundationEntry(entry) || active.matches(entry.Key()) {
 			selected = append(selected, entry)
 		}
@@ -437,22 +433,12 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	return nil
 }
 
-// isFoundationEntry reports whether an entry configures one of the process
-// foundation modules. Foundation registrations are independent of the
-// business Profile selected for the process.
+// isFoundationEntry reports whether a registration is independent of Profile.
 func isFoundationEntry(entry Entry) bool {
-	if entry.Scope == "codec" || entry.Scope == "basic" || strings.HasPrefix(entry.Scope, "basic:") || entry.Scope == "core:library" {
-		return true
+	if resource, ok := entry.Value.(Foundation); ok {
+		return resource.Foundation()
 	}
-	// Keep the type check as a compatibility guard for foundation values that
-	// predate Scope methods, including the short []string MIME form.
-	switch entry.Value.(type) {
-	case Type, *Type, Language, *Language, Mime, []string,
-		Status, *Status, Statuses, *Statuses, Codec, *Codec, Library, *Library:
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 // Config returns a copy of the process configuration delivered to modules.

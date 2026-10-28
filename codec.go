@@ -18,7 +18,19 @@ type Codec struct {
 	Decode func(base.Any, base.Any) (base.Any, error)
 }
 
-func (Codec) Scope() string { return "codec" }
+func (Codec) Scope() string    { return "codec" }
+func (Codec) Foundation() bool { return true }
+
+// Codecs groups named codecs for bulk registration.
+type Codecs map[string]Codec
+
+func (items Codecs) Registrations() map[string]any {
+	entries := make(map[string]any, len(items))
+	for name, value := range items {
+		entries[name] = value
+	}
+	return entries
+}
 
 type codecModule struct {
 	codecs map[string]Codec

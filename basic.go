@@ -3,6 +3,7 @@ package dubi
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,17 +24,38 @@ type Type struct {
 	Value func(base.Any, base.Var) base.Any
 }
 
+// Types groups named type definitions for bulk registration.
+type Types map[string]Type
+
+func (items Types) Registrations() map[string]any {
+	entries := make(map[string]any, len(items))
+	for name, value := range items {
+		entries[name] = value
+	}
+	return entries
+}
+
 // Status is the internal code assigned to one result status key.
 type Status int
 
-func (Status) Scope() string { return "basic:status" }
+func (Status) Scope() string    { return "basic:status" }
+func (Status) Foundation() bool { return true }
 
 // Statuses is the status key to internal code catalog.
 type Statuses map[string]Status
 
-func (Statuses) Scope() string { return "basic:status" }
+func (Statuses) Scope() string    { return "basic:status" }
+func (Statuses) Foundation() bool { return true }
+func (items Statuses) Registrations() map[string]any {
+	entries := make(map[string]any, len(items))
+	for name, value := range items {
+		entries[name] = value
+	}
+	return entries
+}
 
-func (Type) Scope() string { return "basic:type" }
+func (Type) Scope() string    { return "basic:type" }
+func (Type) Foundation() bool { return true }
 
 // Language contains a language's accepted request tags and translated text.
 type Language struct {
@@ -43,18 +65,51 @@ type Language struct {
 	Strings base.Map
 }
 
-func (Language) Scope() string { return "basic:language" }
+func (Language) Scope() string    { return "basic:language" }
+func (Language) Foundation() bool { return true }
 
 // Mime maps a file extension to one or more MIME values.
 type Mime []string
 
-func (Mime) Scope() string { return "basic:mime" }
+func (Mime) Scope() string    { return "basic:mime" }
+func (Mime) Foundation() bool { return true }
+
+// Mimes groups extensions with their MIME types for bulk registration.
+type Mimes map[string]string
+
+// Registrations expands the catalog into individual Mime registrations.
+func (m Mimes) Registrations() map[string]any {
+	entries := make(map[string]any, len(m))
+	for ext, value := range m {
+		entries[ext] = Mime{value}
+	}
+	return entries
+}
+
+// Regular is a set of alternative regular expressions for a named pattern.
+type Regular []string
+
+func (Regular) Scope() string    { return "basic:regular" }
+func (Regular) Foundation() bool { return true }
+
+// Regulars groups named regular expressions for bulk registration.
+type Regulars map[string]Regular
+
+func (items Regulars) Registrations() map[string]any {
+	entries := make(map[string]any, len(items))
+	for name, value := range items {
+		entries[name] = value
+	}
+	return entries
+}
 
 type basicModule struct {
 	types     map[string]Type
 	statuses  Statuses
 	languages map[string]Language
 	mimes     map[string]Mime
+	regulars  map[string]Regular
+	patterns  map[string][]*regexp.Regexp
 }
 
 var basic = &basicModule{
@@ -62,6 +117,8 @@ var basic = &basicModule{
 	statuses:  make(Statuses),
 	languages: make(map[string]Language),
 	mimes:     make(map[string]Mime),
+	regulars:  make(map[string]Regular),
+	patterns:  make(map[string][]*regexp.Regexp),
 }
 
 func init() {
@@ -111,8 +168,8 @@ func (b *basicModule) Register(name string, value any) {
 		}
 	case Mime:
 		b.mimes[name] = append(Mime(nil), item...)
-	case []string:
-		b.mimes[name] = append(Mime(nil), item...)
+	case Regular:
+		b.regulars[name] = append(Regular(nil), item...)
 	case Status:
 		b.statuses[name] = item
 	case Statuses:
@@ -127,6 +184,8 @@ func (b *basicModule) Reset() {
 	b.statuses = make(Statuses)
 	b.languages = make(map[string]Language)
 	b.mimes = builtinMimes()
+	b.regulars = make(map[string]Regular)
+	b.patterns = make(map[string][]*regexp.Regexp)
 	statusCatalog.RLock()
 	for name, code := range statusCatalog.statuses {
 		b.statuses[name] = code
@@ -153,11 +212,24 @@ func (b *basicModule) registerType(name string, item Type) {
 }
 
 func (*basicModule) Config(base.Map) error { return nil }
-func (*basicModule) Setup(*Context) error  { return nil }
-func (*basicModule) Open(*Context) error   { return nil }
-func (*basicModule) Start(*Context) error  { return nil }
-func (*basicModule) Stop(*Context) error   { return nil }
-func (*basicModule) Close(*Context) error  { return nil }
+func (b *basicModule) Setup(*Context) error {
+	patterns := make(map[string][]*regexp.Regexp, len(b.regulars))
+	for name, expressions := range b.regulars {
+		for _, expression := range expressions {
+			compiled, err := regexp.Compile(expression)
+			if err != nil {
+				return fmt.Errorf("regular %q: %w", name, err)
+			}
+			patterns[name] = append(patterns[name], compiled)
+		}
+	}
+	b.patterns = patterns
+	return nil
+}
+func (*basicModule) Open(*Context) error  { return nil }
+func (*basicModule) Start(*Context) error { return nil }
+func (*basicModule) Stop(*Context) error  { return nil }
+func (*basicModule) Close(*Context) error { return nil }
 
 // Mapping validates and converts data according to base.Vars.
 func (rt *Runtime) Mapping(config base.Vars, data base.Map, values ...base.Map) (base.Map, base.Res) {
@@ -672,6 +744,24 @@ func (rt *Runtime) Mimetype(ext string, defaults ...string) string {
 
 func Mimetype(ext string, defaults ...string) string {
 	return DefaultRuntime().Mimetype(ext, defaults...)
+}
+
+// Expressions returns a copy of a named regular's expressions, or defaults.
+func Expressions(name string, defaults ...string) []string {
+	if expressions, ok := basic.regulars[name]; ok {
+		return append([]string(nil), expressions...)
+	}
+	return append([]string(nil), defaults...)
+}
+
+// Match reports whether any expression registered under name matches value.
+func Match(name, value string) bool {
+	for _, expression := range basic.patterns[name] {
+		if expression.MatchString(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func registerStatus(key string, code Status, text string) {

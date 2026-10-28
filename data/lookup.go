@@ -3,6 +3,7 @@ package data
 import (
 	"fmt"
 
+	dubi "github.com/dubi-project/dubi-go"
 	. "github.com/dubi-project/dubi-go/base"
 )
 
@@ -72,7 +73,25 @@ func (m *Module) Models() map[string]Model {
 func (m *Module) TableConfig(name string) *Table {
 	cfg, err := m.tableConfig("", name)
 	if err != nil {
-		return nil
+		registeredName, value, ok := lookupRegistered("data:table", name)
+		if !ok {
+			return nil
+		}
+		switch table := value.(type) {
+		case Table:
+			cfg = table
+		case *Table:
+			if table == nil {
+				return nil
+			}
+			cfg = *table
+		default:
+			return nil
+		}
+		cfg.Name = registeredName
+		if cfg.Key == "" {
+			cfg.Key = "id"
+		}
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
@@ -85,7 +104,25 @@ func (m *Module) TableConfig(name string) *Table {
 func (m *Module) ViewConfig(name string) *View {
 	cfg, err := m.viewConfig("", name)
 	if err != nil {
-		return nil
+		registeredName, value, ok := lookupRegistered("data:view", name)
+		if !ok {
+			return nil
+		}
+		switch view := value.(type) {
+		case View:
+			cfg = view
+		case *View:
+			if view == nil {
+				return nil
+			}
+			cfg = *view
+		default:
+			return nil
+		}
+		cfg.Name = registeredName
+		if cfg.Key == "" {
+			cfg.Key = "id"
+		}
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
@@ -96,12 +133,41 @@ func (m *Module) ViewConfig(name string) *View {
 func (m *Module) ModelConfig(name string) *Model {
 	cfg, err := m.modelConfig("", name)
 	if err != nil {
-		return nil
+		registeredName, value, ok := lookupRegistered("data:model", name)
+		if !ok {
+			return nil
+		}
+		switch model := value.(type) {
+		case Model:
+			cfg = model
+		case *Model:
+			if model == nil {
+				return nil
+			}
+			cfg = *model
+		default:
+			return nil
+		}
+		cfg.Name = registeredName
+		if cfg.Key == "" {
+			cfg.Key = "id"
+		}
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
 	out.Settings = cloneMap(cfg.Settings)
 	return &out
+}
+
+// Look up the same wildcard and exact names used by the module before Setup
+// has delivered registered definitions to it.
+func lookupRegistered(scope, name string) (string, any, bool) {
+	for _, key := range []string{"." + name, "*." + name, name} {
+		if value, ok := dubi.LookupScope(scope, key); ok {
+			return key, value, true
+		}
+	}
+	return "", nil, false
 }
 
 func (m *Module) Field(name, field string, extends ...Any) Var {
