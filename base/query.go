@@ -57,7 +57,8 @@ const (
 	OptFacets      = "$facets"
 	OptHighlight   = "$highlight"
 	OptRaw         = "$raw"
-	OptSetting     = "$setting"
+	OptSettings    = "$settings"
+	OptSetting     = "$setting" // Legacy spelling of OptSettings.
 )
 
 const (

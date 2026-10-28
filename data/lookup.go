@@ -76,7 +76,7 @@ func (m *Module) TableConfig(name string) *Table {
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
-	out.Setting = cloneMap(cfg.Setting)
+	out.Settings = cloneMap(cfg.Settings)
 	out.Indexes = cloneIndexList(cfg.Indexes)
 	out.Cascades = cloneCascadeList(cfg.Cascades)
 	return &out
@@ -89,7 +89,7 @@ func (m *Module) ViewConfig(name string) *View {
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
-	out.Setting = cloneMap(cfg.Setting)
+	out.Settings = cloneMap(cfg.Settings)
 	return &out
 }
 
@@ -100,7 +100,7 @@ func (m *Module) ModelConfig(name string) *Model {
 	}
 	out := cfg
 	out.Fields = cloneVars(cfg.Fields)
-	out.Setting = cloneMap(cfg.Setting)
+	out.Settings = cloneMap(cfg.Settings)
 	return &out
 }
 

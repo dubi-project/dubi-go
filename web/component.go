@@ -19,7 +19,7 @@ type Router struct {
 	Auth     bool
 	Args     Vars
 	Data     Vars
-	Setting  Map
+	Settings Map
 	Loading  Loading
 	Routing  Routing
 	Action   func(*Context)
@@ -90,7 +90,7 @@ func inheritRouter(config Router) Router {
 	copyOf := config
 	copyOf.Args = config.Args.Clone()
 	copyOf.Data = config.Data.Clone()
-	copyOf.Setting = config.Setting.Clone()
+	copyOf.Settings = config.Settings.Clone()
 	copyOf.Loading = cloneLoading(config.Loading)
 	copyOf.Uris = append([]string(nil), config.Uris...)
 	copyOf.Routing = nil
@@ -135,12 +135,12 @@ func mergeRouter(target *Router, override Router) {
 			target.Data[key] = value.Clone()
 		}
 	}
-	if override.Setting != nil {
-		if target.Setting == nil {
-			target.Setting = Map{}
+	if override.Settings != nil {
+		if target.Settings == nil {
+			target.Settings = Map{}
 		}
-		for key, value := range override.Setting {
-			target.Setting[key] = value
+		for key, value := range override.Settings {
+			target.Settings[key] = value
 		}
 	}
 	if override.Loading != nil {

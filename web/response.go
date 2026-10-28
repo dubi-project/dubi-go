@@ -24,7 +24,7 @@ type answerEnvelope struct {
 	Code int    `json:"code"`
 	Time int64  `json:"time"`
 	Text string `json:"text,omitempty"`
-	Data *Map   `json:"data,omitempty"`
+	Data Map    `json:"data,omitempty"`
 }
 type redirectBody struct{ url string }
 type fileBody struct {
@@ -67,7 +67,9 @@ func (ctx *Context) JSON(value any, codes ...int) {
 
 // Answer uses Res.Code() as the business result code, independent of ctx.Code
 // (the HTTP status). Data defaults to ctx.Data, which response filters may edit.
+// A nil result means success without text. Nil and empty data are omitted.
 func (ctx *Context) Answer(result Res, data ...Map) {
+	body := answerBody{result}
 	if result == nil {
 		result = dubi.OK
 	}
@@ -76,7 +78,7 @@ func (ctx *Context) Answer(result Res, data ...Map) {
 		ctx.Data = data[0]
 	}
 	ctx.setResponseHeader("Content-Type", "application/json; charset=utf-8")
-	ctx.Body = answerBody{result}
+	ctx.Body = body
 }
 
 func (ctx *Context) Redirect(url string, codes ...int) {
@@ -153,8 +155,12 @@ func (ctx *Context) prepare() error {
 		}
 		ctx.Body = data
 	case answerBody:
+		result := body.result
+		if result == nil {
+			result = dubi.OK
+		}
 		data := ctx.Data
-		if body.result.OK() && data != nil && len(ctx.responseVars) > 0 {
+		if result.OK() && data != nil && len(ctx.responseVars) > 0 {
 			var mapped Map
 			var res Res
 			if ctx.responsePlan != nil {
@@ -167,12 +173,9 @@ func (ctx *Context) prepare() error {
 			}
 			data = mapped
 		}
-		value := answerEnvelope{Code: body.result.Code(), Time: time.Now().Unix()}
-		if text := ctx.String(body.result.Status(), body.result.Args()...); text != "" {
-			value.Text = text
-		}
-		if data != nil {
-			value.Data = &data
+		value := answerEnvelope{Code: result.Code(), Time: time.Now().Unix(), Data: data}
+		if body.result != nil && result.Status() != "" {
+			value.Text = ctx.String(result.Status(), result.Args()...)
 		}
 		encoded, err := ctx.marshal(value)
 		if err != nil {
@@ -310,10 +313,10 @@ func (ctx *Context) enableCompression() {
 }
 
 func (ctx *Context) shouldCompress() bool {
-	if ctx == nil || ctx.Request == nil || ctx.Request.Method == stdhttp.MethodHead || ctx.Setting == nil {
+	if ctx == nil || ctx.Request == nil || ctx.Request.Method == stdhttp.MethodHead || ctx.Settings == nil {
 		return false
 	}
-	if !boolValue(ctx.Setting["compress"]) || ctx.Writer.Header().Get("Content-Encoding") != "" {
+	if !boolValue(ctx.Settings["compress"]) || ctx.Writer.Header().Get("Content-Encoding") != "" {
 		return false
 	}
 	gzipQuality, wildcardQuality := -1.0, -1.0

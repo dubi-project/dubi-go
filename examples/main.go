@@ -78,9 +78,9 @@ func init() {
 				},
 			},
 			"POST": {
-				Setting: Map{"operation": "create"},
+				Settings: Map{"operation": "create"},
 				Action: func(ctx *web.Context) {
-					ctx.JSON(Map{"site": ctx.Site, "operation": ctx.Setting["operation"]}, 201)
+					ctx.JSON(Map{"site": ctx.Site, "operation": ctx.Settings["operation"]}, 201)
 				},
 			},
 		},

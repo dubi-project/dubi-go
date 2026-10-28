@@ -315,24 +315,25 @@ func (i *Module) ConfiguredServers() map[string]ServerConfig {
 const defaultServerName = "default"
 
 type serverState struct {
-	config        ServerConfig
-	serverNames   map[string]struct{}
-	listener      net.Listener
-	server        *stdhttp.Server
-	started       bool
-	muxes         map[string]*stdhttp.ServeMux
-	pathMuxes     map[string]*stdhttp.ServeMux
-	pathPatterns  map[string]map[string]struct{}
-	filters       map[string][]Filter
-	handlers      map[string][]Handler
-	hasRoutes     bool
-	hasStatic     bool
-	pipelines     map[string]*sitePipeline
-	routes        *routeRegistry
-	exactSites    map[string]string
-	wildcardSites []siteHostPattern
-	cors          map[string]corsPolicy
-	concurrency   chan struct{}
+	config         ServerConfig
+	serverNames    map[string]struct{}
+	listener       net.Listener
+	server         *stdhttp.Server
+	started        bool
+	muxes          map[string]*stdhttp.ServeMux
+	pathMuxes      map[string]*stdhttp.ServeMux
+	pathPatterns   map[string]map[string]struct{}
+	filters        map[string][]Filter
+	handlers       map[string][]Handler
+	hasRoutes      bool
+	hasStatic      bool
+	pipelines      map[string]*sitePipeline
+	routes         *routeRegistry
+	exactSites     map[string]string
+	wildcardSites  []siteHostPattern
+	automaticSites map[string]string
+	cors           map[string]corsPolicy
+	concurrency    chan struct{}
 }
 
 type siteHostPattern struct {
@@ -355,7 +356,7 @@ type sitePipeline struct {
 	staticRoot    string
 	staticRootAbs string
 	staticPrefix  string
-	setting       Map
+	settings      Map
 	handlers      []Handler
 	chain         []func(*Context)
 	requestChain  []func(*Context)
@@ -379,7 +380,7 @@ func newServerState(config ServerConfig, serverNames map[string]struct{}) *serve
 			pathPatterns[name] = make(map[string]struct{})
 		}
 	}
-	exactSites, wildcardSites := compileSiteHosts(config.Sites)
+	exactSites, wildcardSites, automaticSites := compileSiteHosts(config)
 	cors := make(map[string]corsPolicy, len(config.Sites)+1)
 	cors[""] = compileCORSPolicy(config.Cross)
 	for name, site := range config.Sites {
@@ -389,13 +390,14 @@ func newServerState(config ServerConfig, serverNames map[string]struct{}) *serve
 		config: config, serverNames: serverNames, muxes: muxes,
 		pathMuxes: pathMuxes, pathPatterns: pathPatterns,
 		filters: make(map[string][]Filter), handlers: make(map[string][]Handler),
-		hasStatic:     config.Static != "" || sitesHaveStatic(config.Sites),
-		pipelines:     make(map[string]*sitePipeline),
-		routes:        newRouteRegistry(config),
-		exactSites:    exactSites,
-		wildcardSites: wildcardSites,
-		cors:          cors,
-		concurrency:   newConcurrencyGate(config.MaxConcurrency),
+		hasStatic:      config.Static != "" || sitesHaveStatic(config.Sites),
+		pipelines:      make(map[string]*sitePipeline),
+		routes:         newRouteRegistry(config),
+		exactSites:     exactSites,
+		wildcardSites:  wildcardSites,
+		automaticSites: automaticSites,
+		cors:           cors,
+		concurrency:    newConcurrencyGate(config.Options.MaxConcurrency),
 	}
 }
 
@@ -406,18 +408,18 @@ func newConcurrencyGate(limit int) chan struct{} {
 	return make(chan struct{}, limit)
 }
 
-func (s *serverState) settingForSite(site string) Map {
-	setting := s.config.Setting.Clone()
-	if s.config.Compress {
-		if setting == nil {
-			setting = Map{}
+func (s *serverState) settingsForSite(site string) Map {
+	settings := s.config.Settings.Clone()
+	if s.config.Options.Compress {
+		if settings == nil {
+			settings = Map{}
 		}
-		setting["compress"] = true
+		settings["compress"] = true
 	}
 	if site != "" {
-		setting = mergeMap(setting, s.config.Sites[site].Setting)
+		settings = mergeMap(settings, s.config.Sites[site].Settings)
 	}
-	return setting
+	return settings
 }
 
 func (s *serverState) resolveClientIP(request *stdhttp.Request) string {
@@ -425,7 +427,7 @@ func (s *serverState) resolveClientIP(request *stdhttp.Request) string {
 		return ""
 	}
 	peer := requestPeerIP(request.RemoteAddr)
-	if len(s.config.TrustedProxies) == 0 {
+	if len(s.config.Options.TrustedProxies) == 0 {
 		return peer
 	}
 	if !s.isTrustedProxy(peer) {
@@ -454,7 +456,7 @@ func (s *serverState) resolveClientIP(request *stdhttp.Request) string {
 func (s *serverState) isTrustedProxy(address string) bool {
 	address = strings.TrimSpace(address)
 	parsed := net.ParseIP(address)
-	for _, pattern := range s.config.TrustedProxies {
+	for _, pattern := range s.config.Options.TrustedProxies {
 		pattern = strings.TrimSpace(pattern)
 		if pattern == "*" {
 			return true
@@ -496,10 +498,10 @@ func (s *serverState) register(routers map[string]Router, filters map[string]Fil
 					if !exists {
 						continue
 					}
-					baseSetting := s.settingForSite(site)
+					baseSettings := s.settingsForSite(site)
 					s.routes.add(name, compiledName, route, uri, site)
 					handler := compiled
-					routeSetting := mergeMap(baseSetting, handler.Setting)
+					routeSettings := mergeMap(baseSettings, handler.Settings)
 					var argumentPlan *dubi.MappingPlan
 					if len(handler.Args) > 0 {
 						argumentPlan = dubi.PrepareMapping(handler.Args)
@@ -521,7 +523,7 @@ func (s *serverState) register(routers map[string]Router, filters map[string]Fil
 							ctx.Writer = writer
 							ctx.Name = route
 							ctx.Config = handler
-							ctx.Setting = assignMap(ctx.Setting, routeSetting)
+							ctx.Settings = assignMap(ctx.Settings, routeSettings)
 							ctx.Locals = resetMap(ctx.Locals)
 							ctx.responseVars = handler.Data
 							ctx.responsePlan = responsePlan
@@ -688,7 +690,7 @@ func (s *serverState) compilePipelines() {
 			staticRoot:    staticRoot,
 			staticRootAbs: staticRootAbs,
 			staticPrefix:  staticPrefix,
-			setting:       s.settingForSite(site),
+			settings:      s.settingsForSite(site),
 			handlers:      append([]Handler{}, s.handlers[""]...),
 			outcomes:      make(map[string][]func(*Context)),
 		}
@@ -800,7 +802,7 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
-	if cache, ok := p.setting["cache_control"].(string); ok && strings.TrimSpace(cache) != "" {
+	if cache, ok := p.settings["cache_control"].(string); ok && strings.TrimSpace(cache) != "" {
 		ctx.CacheControl(cache)
 	}
 	ctx.fileWithInfo(fileAbs, info)
@@ -926,11 +928,11 @@ func (s *serverState) open() error {
 	s.listener = listener
 	s.server = &stdhttp.Server{
 		Handler:           stdhttp.HandlerFunc(s.serveHTTP),
-		ReadTimeout:       s.config.ReadTimeout,
-		ReadHeaderTimeout: s.config.ReadHeaderTimeout,
-		WriteTimeout:      s.config.WriteTimeout,
-		IdleTimeout:       s.config.IdleTimeout,
-		MaxHeaderBytes:    s.config.MaxHeaderBytes,
+		ReadTimeout:       s.config.Options.ReadTimeout,
+		ReadHeaderTimeout: s.config.Options.ReadHeaderTimeout,
+		WriteTimeout:      s.config.Options.WriteTimeout,
+		IdleTimeout:       s.config.Options.IdleTimeout,
+		MaxHeaderBytes:    s.config.Options.MaxHeaderBytes,
 	}
 	return nil
 }
@@ -945,13 +947,13 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 			releaseContext(ctx)
 		}
 	}()
-	if s.config.RequestTimeout > 0 {
-		requestContext, cancel := context.WithTimeout(request.Context(), s.config.RequestTimeout)
+	if s.config.Options.RequestTimeout > 0 {
+		requestContext, cancel := context.WithTimeout(request.Context(), s.config.Options.RequestTimeout)
 		defer cancel()
 		request = request.WithContext(requestContext)
 	}
-	if s.config.MaxBodyBytes > 0 && request.Body != nil {
-		request.Body = stdhttp.MaxBytesReader(writer, request.Body, s.config.MaxBodyBytes)
+	if s.config.Options.MaxBodyBytes > 0 && request.Body != nil {
+		request.Body = stdhttp.MaxBytesReader(writer, request.Body, s.config.Options.MaxBodyBytes)
 	}
 	site, ok := s.siteForHost(request.Host)
 	if !ok {
@@ -992,7 +994,7 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 				ctx = acquireContext(writer, request)
 				ctx.Site = site
 				ctx.Server = s.config.Name
-				ctx.Setting = assignMap(ctx.Setting, p.setting)
+				ctx.Settings = assignMap(ctx.Settings, p.settings)
 				ctx.routes = s.routes
 				if p.serveStatic(ctx) {
 					p.finish(ctx)
@@ -1010,7 +1012,7 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 	ctx.Site = site
 	ctx.Server = s.config.Name
 	ctx.RemoteIP = s.resolveClientIP(request)
-	ctx.Setting = assignMap(ctx.Setting, p.setting)
+	ctx.Settings = assignMap(ctx.Settings, p.settings)
 	ctx.routes = s.routes
 	ctx.Request = request
 	if noPipeline {
@@ -1231,11 +1233,21 @@ func runChain(ctx *Context, chain []func(*Context)) {
 }
 
 func (s *serverState) start() {
-	if s.listener == nil || s.server == nil {
+	if s.started || s.listener == nil || s.server == nil {
 		return
 	}
 	s.started = true
-	go func() { _ = s.server.Serve(s.listener) }()
+	server, listener, name := s.server, s.listener, s.config.Name
+	scheme := "http"
+	if s.config.TLS.Cert != "" {
+		scheme = "https"
+	}
+	log.Printf("dubi web: listening server=%q url=%s://%s sites=%d", name, scheme, listener.Addr(), len(s.config.Sites))
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
+			log.Printf("dubi web: serve failed server=%q error=%v", name, err)
+		}
+	}()
 }
 
 func (s *serverState) close(parent context.Context) error {
@@ -1246,7 +1258,7 @@ func (s *serverState) close(parent context.Context) error {
 			if shutdownContext == nil {
 				shutdownContext = context.Background()
 			}
-			timeout := s.config.ShutdownTimeout
+			timeout := s.config.Options.ShutdownTimeout
 			if timeout <= 0 {
 				timeout = 5 * time.Second
 			}
@@ -1322,67 +1334,6 @@ func routeSites(config ServerConfig, serverNames map[string]struct{}, name strin
 		return nil, "", false
 	}
 	return []string{""}, name, true
-}
-
-func compileSiteHosts(sites map[string]SiteConfig) (map[string]string, []siteHostPattern) {
-	exact := make(map[string]string)
-	wildcards := make([]siteHostPattern, 0)
-	for _, name := range sortedKeys(sites) {
-		site := sites[name]
-		candidates := append(append([]string{}, site.Hosts...), site.Aliases...)
-		for _, candidate := range candidates {
-			candidate = normalizeHostPattern(candidate)
-			if candidate == "" {
-				continue
-			}
-			if candidate == "*" {
-				wildcards = append(wildcards, siteHostPattern{site: name})
-				continue
-			}
-			if strings.HasPrefix(candidate, "*.") {
-				wildcards = append(wildcards, siteHostPattern{suffix: candidate[1:], site: name})
-				continue
-			}
-			exact[candidate] = name
-		}
-	}
-	sort.SliceStable(wildcards, func(left, right int) bool {
-		if len(wildcards[left].suffix) != len(wildcards[right].suffix) {
-			return len(wildcards[left].suffix) > len(wildcards[right].suffix)
-		}
-		return wildcards[left].site < wildcards[right].site
-	})
-	return exact, wildcards
-}
-
-func normalizeHostPattern(raw string) string {
-	host := strings.ToLower(strings.TrimSpace(raw))
-	if host == "" || host == "*" {
-		return host
-	}
-	if strings.HasPrefix(host, "*.") {
-		return "*." + strings.TrimSuffix(strings.TrimSpace(host[2:]), ".")
-	}
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		host = parsed
-	}
-	return strings.TrimSuffix(host, ".")
-}
-
-func (s *serverState) siteForHost(rawHost string) (string, bool) {
-	if len(s.config.Sites) == 0 {
-		return "", true
-	}
-	host := normalizeHostPattern(rawHost)
-	if site, ok := s.exactSites[host]; ok {
-		return site, true
-	}
-	for _, pattern := range s.wildcardSites {
-		if pattern.suffix == "" || strings.HasSuffix(host, pattern.suffix) {
-			return pattern.site, true
-		}
-	}
-	return "", false
 }
 
 type httpContextKey struct{}

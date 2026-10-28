@@ -28,18 +28,18 @@ func TestParseSingleHTTPConfig(t *testing.T) {
 		"setting": Map{"gzip": true},
 		"cross":   Map{"origins": []any{"https://example.com"}},
 		"sites": Map{
-			"www": Map{"hosts": []any{"www.example.com"}},
-			"api": Map{"hosts": []any{"api.example.com"}},
+			"www": Map{"domains": []any{"www.example.com"}},
+			"api": Map{"domains": []any{"api.example.com"}},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Port != 8080 || len(config.Sites) != 2 || config.Setting["gzip"] != true {
+	if config.Port != 8080 || len(config.Sites) != 2 || config.Settings["gzip"] != true {
 		t.Fatalf("config = %#v", config)
 	}
 	server := defaultServerConfig(config)
-	if server.Port != 8080 || !reflect.DeepEqual(server.Sites["www"].Hosts, []string{"www.example.com"}) {
+	if server.Port != 8080 || !reflect.DeepEqual(server.Sites["www"].Domains, []string{"www.example.com"}) {
 		t.Fatalf("default server = %#v", server)
 	}
 }
@@ -73,8 +73,8 @@ func TestParseMultipleHTTPServers(t *testing.T) {
 			"b": Map{
 				"port": 8082,
 				"sites": Map{
-					"www": Map{"hosts": []any{"www.example.com"}},
-					"api": Map{"hosts": []any{"api.example.com"}},
+					"www": Map{"domains": []any{"www.example.com"}},
+					"api": Map{"domains": []any{"api.example.com"}},
 				},
 			},
 		},
@@ -92,25 +92,27 @@ func TestParseMultipleHTTPServers(t *testing.T) {
 
 func TestParseWebProductionOptions(t *testing.T) {
 	config, err := parseConfig(Map{
-		"read_timeout":        "2s",
-		"read_header_timeout": "1500ms",
-		"request_timeout":     "3s",
-		"shutdown_timeout":    "4s",
-		"max_header_bytes":    1024,
-		"max_body_bytes":      2048,
-		"max_concurrency":     16,
-		"compress":            true,
-		"trusted_proxies":     []any{"127.0.0.1", "10.0.0.0/8"},
-		"tls":                 Map{"cert": "server.crt", "key": "server.key"},
+		"options": Map{
+			"read_timeout":        "2s",
+			"read_header_timeout": "1500ms",
+			"request_timeout":     "3s",
+			"shutdown_timeout":    "4s",
+			"max_header_bytes":    1024,
+			"max_body_bytes":      2048,
+			"max_concurrency":     16,
+			"compress":            true,
+			"trusted_proxies":     []any{"127.0.0.1", "10.0.0.0/8"},
+		},
+		"tls": Map{"cert": "server.crt", "key": "server.key"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := defaultServerConfig(config)
-	if server.ReadTimeout != 2*time.Second || server.ReadHeaderTimeout != 1500*time.Millisecond || server.RequestTimeout != 3*time.Second || server.ShutdownTimeout != 4*time.Second || server.MaxBodyBytes != 2048 || server.MaxConcurrency != 16 || !server.Compress {
+	if server.Options.ReadTimeout != 2*time.Second || server.Options.ReadHeaderTimeout != 1500*time.Millisecond || server.Options.RequestTimeout != 3*time.Second || server.Options.ShutdownTimeout != 4*time.Second || server.Options.MaxBodyBytes != 2048 || server.Options.MaxConcurrency != 16 || !server.Options.Compress {
 		t.Fatalf("server options = %#v", server)
 	}
-	if server.TLS.Cert != "server.crt" || len(server.TrustedProxies) != 2 {
+	if server.TLS.Cert != "server.crt" || len(server.Options.TrustedProxies) != 2 {
 		t.Fatalf("server security options = %#v", server)
 	}
 	if err := validateServers(map[string]ServerConfig{"web": server}); err != nil {
@@ -318,7 +320,7 @@ func TestHTTPMethodMismatchReturns405(t *testing.T) {
 func TestHTTPRequestBodyLimitReturns413(t *testing.T) {
 	port := freePort(t)
 	configPath := filepath.Join(t.TempDir(), "web-body-limit.json")
-	data := fmt.Sprintf(`{"web":{"port":%d,"max_body_bytes":4}}`, port)
+	data := fmt.Sprintf(`{"web":{"port":%d,"options":{"max_body_bytes":4}}}`, port)
 	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +421,7 @@ func TestHTTPMultipartUploadsAndNestedValues(t *testing.T) {
 func TestHTTPTrustedProxyAndCompression(t *testing.T) {
 	port := freePort(t)
 	configPath := filepath.Join(t.TempDir(), "web-proxy.json")
-	data := fmt.Sprintf(`{"web":{"port":%d,"compress":true,"trusted_proxies":["127.0.0.1"]}}`, port)
+	data := fmt.Sprintf(`{"web":{"port":%d,"option":{"compress":true,"trusted_proxies":["127.0.0.1"]}}}`, port)
 	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -769,7 +771,7 @@ func TestHTTPNotFoundCarriesResult(t *testing.T) {
 func TestHTTPRuntimeSelectsSiteByHost(t *testing.T) {
 	port := freePort(t)
 	configPath := filepath.Join(t.TempDir(), "http-sites.json")
-	data := fmt.Sprintf(`{"web":{"port":%d,"sites":{"www":{"hosts":["www.example.test"]},"api":{"hosts":["api.example.test"]}}}}`, port)
+	data := fmt.Sprintf(`{"web":{"port":%d,"sites":{"www":{"domains":["www.example.test"]},"api":{"domains":["api.example.test"]}}}}`, port)
 	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -821,17 +823,17 @@ func TestHTTPRuntimeSelectsSiteByHost(t *testing.T) {
 func TestHTTPContextMergesWebSiteAndRouterSettings(t *testing.T) {
 	port := freePort(t)
 	configPath := filepath.Join(t.TempDir(), "web-settings.json")
-	data := fmt.Sprintf(`{"web":{"port":%d,"setting":{"web":true,"shared":"web"},"sites":{"www":{"hosts":["www.settings.test"],"setting":{"site":true,"shared":"site"}}}}}`, port)
+	data := fmt.Sprintf(`{"web":{"port":%d,"settings":{"web":true,"shared":"web"},"sites":{"www":{"domains":["www.settings.test"],"setting":{"site":true,"shared":"site"}}}}}`, port)
 	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DUBI_CONFIG", configPath)
 	rt := testRuntime()
 	rt.Register("www.index", Router{
-		Uri:     "/",
-		Setting: Map{"router": true, "shared": "router"},
+		Uri:      "/",
+		Settings: Map{"router": true, "shared": "router"},
 		Action: func(ctx *Context) {
-			ctx.JSON(ctx.Setting)
+			ctx.JSON(ctx.Settings)
 		},
 	})
 	if err := rt.Run(); err != nil {

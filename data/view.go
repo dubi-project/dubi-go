@@ -875,8 +875,8 @@ func fieldsPlanSignature(fields Vars) string {
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		cfg := fields[k]
-		flags := make([]string, 0, len(cfg.Setting))
-		for key, value := range cfg.Setting {
+		flags := make([]string, 0, len(cfg.Settings))
+		for key, value := range cfg.Settings {
 			switch strings.ToLower(strings.TrimSpace(key)) {
 			case "array", "multiple":
 				flags = append(flags, key+"="+stableAnySignature(value))
@@ -1029,11 +1029,11 @@ func (v *sqlView) isArrayField(name string) bool {
 		if strings.HasPrefix(t, "[") || strings.HasPrefix(t, "array") {
 			return true
 		}
-		if cfg.Setting == nil {
+		if cfg.Settings == nil {
 			continue
 		}
 		for _, key := range []string{"array", "multiple"} {
-			if raw, ok := cfg.Setting[key]; ok {
+			if raw, ok := cfg.Settings[key]; ok {
 				if on, yes := parseBool(raw); yes && on {
 					return true
 				}
@@ -1249,11 +1249,11 @@ func isArrayVar(cfg Var) bool {
 	if strings.HasPrefix(kind, "[") || strings.HasPrefix(kind, "array") {
 		return true
 	}
-	if cfg.Setting == nil {
+	if cfg.Settings == nil {
 		return false
 	}
 	for _, key := range []string{"array", "multiple"} {
-		if raw, ok := cfg.Setting[key]; ok {
+		if raw, ok := cfg.Settings[key]; ok {
 			if on, yes := parseBool(raw); yes && on {
 				return true
 			}

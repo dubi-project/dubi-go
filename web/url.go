@@ -138,11 +138,22 @@ func (r *routeRegistry) hostFor(ctx *Context, site string) string {
 	}
 	if site != "" {
 		if config, ok := r.config.Sites[site]; ok {
-			for _, host := range append(append([]string{}, config.Hosts...), config.Aliases...) {
+			domains, automatic := effectiveSiteDomains(r.config, site, config)
+			if automatic {
+				if host := automaticSiteHost(ctx, site); host != "" {
+					return host
+				}
+			}
+			for _, host := range domains {
 				if host != "" && !strings.Contains(host, "*") {
 					return addPort(host, r.config.Port)
 				}
 			}
+		}
+	}
+	for _, domain := range r.config.Domains {
+		if domain != "" && !strings.Contains(domain, "*") {
+			return addPort(domain, r.config.Port)
 		}
 	}
 	host := r.config.Host
@@ -153,6 +164,24 @@ func (r *routeRegistry) hostFor(ctx *Context, site string) string {
 		host = "localhost"
 	}
 	return addPort(host, r.config.Port)
+}
+
+// automaticSiteHost changes only the current Site's prefix. The remaining
+// domain and external request port are retained, without guessing a public
+// suffix or replacing it with the listener's internal port.
+func automaticSiteHost(ctx *Context, site string) string {
+	host := normalizeHostPattern(ctx.Host)
+	if host == "" || net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return ""
+	}
+	if prefix := strings.ToLower(ctx.Site) + "."; ctx.Site != "" && strings.HasPrefix(host, prefix) {
+		host = strings.TrimPrefix(host, prefix)
+	}
+	host = strings.ToLower(site) + "." + host
+	if _, port, err := net.SplitHostPort(ctx.Host); err == nil {
+		return net.JoinHostPort(host, port)
+	}
+	return host
 }
 
 func splitURLValues(values ...Map) (options, params, query Map) {

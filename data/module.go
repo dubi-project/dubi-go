@@ -13,10 +13,6 @@ import (
 	. "github.com/dubi-project/dubi-go/base"
 )
 
-func init() {
-	dubi.Mount(module)
-}
-
 var _ dubi.Module = (*Module)(nil)
 
 var module = &Module{
@@ -66,15 +62,15 @@ type (
 		Trash       TrashOptions
 		Watcher     Map
 		Migrate     MigrateOptions
-		Setting     Map
+		Settings    Map
 	}
 
 	Instance struct {
 		conn Connection
 
-		Name    string
-		Config  Config
-		Setting Map
+		Name     string
+		Config   Config
+		Settings Map
 	}
 )
 
@@ -401,8 +397,10 @@ func (m *Module) configure(name string, cfg Map) error {
 			out.Migrate.Jitter = vv
 		}
 	}
-	if v, ok := cfg["setting"].(Map); ok {
-		out.Setting = v
+	if settings, present, err := configuredSettings(cfg); err != nil {
+		return fmt.Errorf("data source %q: %w", name, err)
+	} else if present {
+		out.Settings = settings
 	}
 	out.Trash = normalizeTrashOptions(out.Trash)
 
@@ -456,7 +454,7 @@ var dataConfigOptionKeys = map[string]struct{}{
 	"trashcascade": {}, "trash_cascade": {}, "trashcascadevalue": {}, "trash_cascade_value": {},
 	"watcher": {}, "maxopen": {}, "max_open": {}, "maxidle": {}, "max_idle": {},
 	"maxlifetime": {}, "max_lifetime": {}, "maxidletime": {}, "max_idle_time": {},
-	"pool": {}, "migrate": {}, "setting": {},
+	"pool": {}, "migrate": {}, "setting": {}, "settings": {},
 }
 
 func isSingleConnectionConfig(config Map) bool {
@@ -570,10 +568,10 @@ func mergeConfigDefaults(file, defaults Config, keys map[string]struct{}) Config
 	} else {
 		file.Watcher = mergeMapDefaults(file.Watcher, defaults.Watcher)
 	}
-	if !configKeyPresent(keys, "setting") {
-		file.Setting = cloneMap(defaults.Setting)
+	if !configKeyPresent(keys, "settings", "setting") {
+		file.Settings = cloneMap(defaults.Settings)
 	} else {
-		file.Setting = mergeMapDefaults(file.Setting, defaults.Setting)
+		file.Settings = mergeMapDefaults(file.Settings, defaults.Settings)
 	}
 	if !configKeyPresent(keys, "trash", "trashEnable", "trashField", "trashValue", "trashCascade") {
 		file.Trash = defaults.Trash
@@ -753,7 +751,7 @@ func (m *Module) Open(*dubi.Context) error {
 	sort.Strings(names)
 	for _, name := range names {
 		cfg := configs[name]
-		inst := &Instance{Name: name, Config: cfg, Setting: cfg.Setting}
+		inst := &Instance{Name: name, Config: cfg, Settings: cfg.Settings}
 		conn, err := connectBuiltin(inst)
 		if err != nil {
 			closeOpened()

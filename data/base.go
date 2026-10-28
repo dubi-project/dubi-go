@@ -807,7 +807,7 @@ func (b *sqlBase) migrateWith(names []string, override MigrateOptions) (MigrateR
 
 		schema := pickSchema(b.inst, cfg.Schema)
 		source := pickName(name, cfg.Table)
-		actions, err := b.planTableActions(schema, source, pickKey(cfg.Key), cfg.Fields, cfg.Indexes, cfg.Setting, opts)
+		actions, err := b.planTableActions(schema, source, pickKey(cfg.Key), cfg.Fields, cfg.Indexes, cfg.Settings, opts)
 		if err != nil {
 			err = wrapErr("migrate."+name+".plan", ErrInvalidQuery, err)
 			b.setError(err)
@@ -2502,8 +2502,8 @@ func (b *sqlBase) migrateIndexes(schema, table string, indexes []Index, setting 
 
 func (b *sqlBase) logSlow(query string, args []Any, start time.Time) {
 	threshold := time.Duration(0)
-	if b.inst != nil && b.inst.Config.Setting != nil {
-		if v, ok := b.inst.Config.Setting["slow"]; ok {
+	if b.inst != nil && b.inst.Config.Settings != nil {
+		if v, ok := b.inst.Config.Settings["slow"]; ok {
 			switch vv := v.(type) {
 			case int:
 				threshold = time.Millisecond * time.Duration(vv)
@@ -2570,15 +2570,15 @@ func migrateType(dialect, typ string) string {
 
 func migrateSignature(cfg Table) string {
 	payload, _ := json.Marshal(struct {
-		Key     string  `json:"key"`
-		Fields  Vars    `json:"fields"`
-		Indexes []Index `json:"indexes"`
-		Setting Map     `json:"setting"`
+		Key      string  `json:"key"`
+		Fields   Vars    `json:"fields"`
+		Indexes  []Index `json:"indexes"`
+		Settings Map     `json:"settings"`
 	}{
-		Key:     cfg.Key,
-		Fields:  cfg.Fields,
-		Indexes: cfg.Indexes,
-		Setting: cfg.Setting,
+		Key:      cfg.Key,
+		Fields:   cfg.Fields,
+		Indexes:  cfg.Indexes,
+		Settings: cfg.Settings,
 	})
 	sum := sha1.Sum(payload)
 	return hex.EncodeToString(sum[:])
@@ -2891,7 +2891,7 @@ func (b *sqlBase) ensureWritable(op string) error {
 	if b == nil || b.inst == nil {
 		return nil
 	}
-	if b.inst.Config.ReadOnly || isReadOnlySetting(b.inst.Config.Setting) {
+	if b.inst.Config.ReadOnly || isReadOnlySetting(b.inst.Config.Settings) {
 		return wrapErr(op, ErrValidation, fmt.Errorf("readonly data connection: %s", b.inst.Name))
 	}
 	return nil
@@ -2915,11 +2915,11 @@ func (b *sqlBase) scanBatchSize() int64 {
 	if b == nil || b.inst == nil {
 		return 0
 	}
-	if b.inst.Config.Setting == nil {
+	if b.inst.Config.Settings == nil {
 		return 0
 	}
 	for _, key := range []string{"scanBatch", "scan_batch"} {
-		if raw, ok := b.inst.Config.Setting[key]; ok {
+		if raw, ok := b.inst.Config.Settings[key]; ok {
 			if vv, ok := parseInt64(raw); ok && vv > 0 {
 				return vv
 			}

@@ -1,5 +1,5 @@
 // Package base contains the small, dependency-free types shared by dubi-go
-// packages. It deliberately has no runtime, protocol, or capability logic.
+// packages. It deliberately has no runtime, protocol, or Engine logic.
 package base
 
 // Any is kept as a named alias for documentation and compatibility with the

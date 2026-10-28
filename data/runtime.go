@@ -513,10 +513,10 @@ func makeCacheKey(base *sqlBase, scope string, q Query) string {
 }
 
 func (b *sqlBase) cacheEnabled() bool {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return false
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return false
 	}
@@ -542,10 +542,10 @@ func (b *sqlBase) cacheEnabled() bool {
 }
 
 func (b *sqlBase) cacheTTL() time.Duration {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return 0
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return 0
 	}
@@ -572,10 +572,10 @@ func (b *sqlBase) cacheTTL() time.Duration {
 }
 
 func (b *sqlBase) cacheCapacity() int {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return 0
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return 0
 	}
@@ -593,19 +593,19 @@ func (b *sqlBase) cacheCapacity() int {
 
 func (b *sqlBase) planCacheCapacity() int {
 	const def = 2048
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return def
 	}
-	if raw, ok := b.inst.Config.Setting["plan"]; ok {
+	if raw, ok := b.inst.Config.Settings["plan"]; ok {
 		return parsePlanCapacity(raw, def)
 	}
-	if raw, ok := b.inst.Config.Setting["planCache"]; ok {
+	if raw, ok := b.inst.Config.Settings["planCache"]; ok {
 		return parsePlanCapacity(raw, def)
 	}
-	if raw, ok := b.inst.Config.Setting["sqlPlan"]; ok {
+	if raw, ok := b.inst.Config.Settings["sqlPlan"]; ok {
 		return parsePlanCapacity(raw, def)
 	}
-	if raw, ok := b.inst.Config.Setting["cache"]; ok {
+	if raw, ok := b.inst.Config.Settings["cache"]; ok {
 		if vv, ok := raw.(Map); ok {
 			for _, key := range []string{"plan", "planCache", "planCapacity", "sqlPlan", "sqlPlanCapacity"} {
 				if c, ok := vv[key]; ok {

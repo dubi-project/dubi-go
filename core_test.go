@@ -69,6 +69,33 @@ func TestMethodProfileUsesCoreScope(t *testing.T) {
 	}
 }
 
+func TestMethodAndServiceSettingsAreCopiedIntoContext(t *testing.T) {
+	rt := testRuntime()
+	methodSettings := Map{"kind": "method"}
+	serviceSettings := Map{"kind": "service"}
+	action := func(ctx *Context) Map {
+		kind := ctx.Settings["kind"]
+		ctx.Settings["kind"] = "changed"
+		return Map{"kind": kind}
+	}
+	rt.Register("settings.method", Method{Settings: methodSettings, Action: action})
+	rt.Register("settings.service", Service{Settings: serviceSettings, Action: action})
+	if err := rt.Run(""); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.End()
+	for i := 0; i < 2; i++ {
+		for name, want := range map[string]string{"settings.method": "method", "settings.service": "service"} {
+			if data := NewMeta().Invoke(name); data["kind"] != want {
+				t.Fatalf("%s context settings: %v", name, data)
+			}
+		}
+	}
+	if methodSettings["kind"] != "method" || serviceSettings["kind"] != "service" {
+		t.Fatal("context mutated registration settings")
+	}
+}
+
 func TestMethodSupportsDynamicErrorReturns(t *testing.T) {
 	rt := testRuntime()
 	rt.Register("dynamic", Method{Action: func(*Context) (any, error) {

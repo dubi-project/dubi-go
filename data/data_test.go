@@ -118,16 +118,16 @@ func TestConfigForms(t *testing.T) {
 		t.Fatal(err)
 	}
 	module.RegisterConfig("default", Config{
-		Type:    "mysql",
-		Url:     "code-default-must-not-win",
-		MaxOpen: 7,
-		Setting: Map{"scanBatch": int64(64)},
+		Type:     "mysql",
+		Url:      "code-default-must-not-win",
+		MaxOpen:  7,
+		Settings: Map{"scanBatch": int64(64)},
 	})
 	cfg := module.configs[defaultName]
 	if cfg.Type != "sqlite" || cfg.Url != "file:file-defaults?mode=memory&cache=shared" {
 		t.Fatalf("file connection values were not authoritative: %#v", cfg)
 	}
-	if cfg.MaxOpen != 7 || cfg.Setting["scanBatch"] != int64(64) {
+	if cfg.MaxOpen != 7 || cfg.Settings["scanBatch"] != int64(64) {
 		t.Fatalf("code defaults were not merged: %#v", cfg)
 	}
 }

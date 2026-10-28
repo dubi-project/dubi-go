@@ -3,9 +3,9 @@ package dubi
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	. "github.com/dubi-project/dubi-go/base"
 )
@@ -40,11 +40,11 @@ type RuntimeOption func(*Runtime)
 type Context struct {
 	context.Context
 	*Meta
-	Name    string
-	Config  any
-	Setting Map
-	Value   Map
-	Args    Map
+	Name     string
+	Config   any
+	Settings Map
+	Value    Map
+	Args     Map
 }
 
 type Runtime struct {
@@ -59,6 +59,7 @@ type Runtime struct {
 	bootstrap    Bootstrap
 	state        lifecycle
 	transition   string
+	startupAt    time.Time
 }
 
 func newRuntime() *Runtime {
@@ -110,6 +111,7 @@ func resetRuntime(rt *Runtime) {
 	rt.bootstrap = fresh.bootstrap
 	rt.state = fresh.state
 	rt.transition = fresh.transition
+	rt.startupAt = fresh.startupAt
 	rt.mu.Unlock()
 }
 
@@ -350,12 +352,14 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	setupOK := false
 	defer func() {
 		if !setupOK {
+			triggers.shutdown()
 			globalRegistry.unfreeze()
 			unfreezeModules()
 			rt.resetLifecycle(stateNew)
 		}
 	}()
 	rt.mu.Lock()
+	rt.startupAt = time.Now()
 	if !rt.configLoaded {
 		if err := rt.loadConfig(); err != nil {
 			rt.mu.Unlock()
@@ -365,7 +369,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	config := cloneConfigMap(rt.config)
 	profileName := rt.identity.Profile
 	rt.mu.Unlock()
-	merged := make(map[string]any)
+	all := make([]Entry, 0)
 	profiles := make(map[string]Profile)
 	registered := globalRegistry.Entries()
 	globalRegistry.Freeze()
@@ -375,7 +379,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 			profiles[entry.Name] = profile
 			continue
 		}
-		merged[entry.Name] = entry.Value
+		all = append(all, entry)
 	}
 	configured, err := configuredProfiles(config)
 	if err != nil {
@@ -384,11 +388,6 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	for name, profile := range configured {
 		profiles[name] = profile
 	}
-	all := make([]Entry, 0, len(merged))
-	for name, value := range merged {
-		all = append(all, Entry{Name: name, Value: value, Scope: registrationScope(value)})
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 	rt.mu.Lock()
 	rt.allEntries = all
 	rt.mu.Unlock()
@@ -402,11 +401,11 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	}
 	selected := make([]Entry, 0, len(all))
 	for _, entry := range all {
-		// Basic and codec registrations describe the process foundation. They
+		// Basic, codec, and library registrations describe the process foundation. They
 		// are always delivered to their module, even when a Profile selects a
 		// smaller set of business components. A Profile chooses entry modules;
 		// it does not make JSON, types, MIME values, status text, or custom
-		// codecs disappear from the process.
+		// codecs or reusable local Libraries disappear from the process.
 		if active == nil || isFoundationEntry(entry) || active.matches(entry.Key()) {
 			selected = append(selected, entry)
 		}
@@ -442,14 +441,14 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 // foundation modules. Foundation registrations are independent of the
 // business Profile selected for the process.
 func isFoundationEntry(entry Entry) bool {
-	if entry.Scope == "codec" || entry.Scope == "basic" || strings.HasPrefix(entry.Scope, "basic:") {
+	if entry.Scope == "codec" || entry.Scope == "basic" || strings.HasPrefix(entry.Scope, "basic:") || entry.Scope == "core:library" {
 		return true
 	}
 	// Keep the type check as a compatibility guard for foundation values that
 	// predate Scope methods, including the short []string MIME form.
 	switch entry.Value.(type) {
 	case Type, *Type, Language, *Language, Mime, []string,
-		Status, *Status, Statuses, *Statuses, Codec, *Codec:
+		Status, *Status, Statuses, *Statuses, Codec, *Codec, Library, *Library:
 		return true
 	default:
 		return false
@@ -487,6 +486,7 @@ func (rt *Runtime) Open(ctx context.Context) error {
 		moduleContext := rt.lifecycleContext(ctx)
 		moduleContext.Name = moduleName(module)
 		if err := module.Open(moduleContext); err != nil {
+			triggers.drain()
 			for j := opened - 1; j >= 0; j-- {
 				closeContext := rt.lifecycleContext(ctx)
 				closeContext.Name = moduleName(modules[j])
@@ -517,6 +517,7 @@ func (rt *Runtime) start(ctx context.Context) error {
 		moduleContext := rt.lifecycleContext(ctx)
 		moduleContext.Name = moduleName(module)
 		if err := module.Start(moduleContext); err != nil {
+			triggers.drain()
 			for j := started - 1; j >= 0; j-- {
 				stopContext := rt.lifecycleContext(ctx)
 				stopContext.Name = moduleName(modules[j])
@@ -532,6 +533,8 @@ func (rt *Runtime) start(ctx context.Context) error {
 	// the active process; it must never observe a started runtime that is absent
 	// from the process wait manager.
 	runtimeManager.add(rt)
+	rt.logStartup(len(modules))
+	Toggle(START)
 	rt.finishLifecycle(stateStarted)
 	return nil
 }
@@ -540,6 +543,9 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	if err := rt.beginLifecycle("stop", stateStarted); err != nil {
 		return err
 	}
+	triggers.drain()
+	SyncToggle(STOP)
+	triggers.drain()
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {
@@ -549,6 +555,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 			first = fmt.Errorf("dubi: stop %q: %w", moduleContext.Name, err)
 		}
 	}
+	triggers.drain()
 	rt.finishLifecycle(stateStopped)
 	runtimeManager.remove(rt)
 	return first
@@ -558,6 +565,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	if err := rt.beginLifecycle("close", stateStopped, stateOpen, stateSetup); err != nil {
 		return err
 	}
+	triggers.shutdown()
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {

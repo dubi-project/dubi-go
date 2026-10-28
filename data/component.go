@@ -23,26 +23,26 @@ type (
 		Fields   Vars
 		Indexes  []Index
 		Cascades []Cascade
-		Setting  Map
+		Settings Map
 	}
 
 	View struct {
-		Name    string
-		Desc    string
-		Schema  string
-		View    string
-		Key     string
-		Fields  Vars
-		Setting Map
+		Name     string
+		Desc     string
+		Schema   string
+		View     string
+		Key      string
+		Fields   Vars
+		Settings Map
 	}
 
 	Model struct {
-		Name    string
-		Desc    string
-		Schema  string
-		Model   string
-		Key     string
-		Fields  Vars
-		Setting Map
+		Name     string
+		Desc     string
+		Schema   string
+		Model    string
+		Key      string
+		Fields   Vars
+		Settings Map
 	}
 )

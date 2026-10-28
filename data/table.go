@@ -1852,10 +1852,10 @@ func (t *sqlTable) blockUnsafeMutation(q Query) bool {
 }
 
 func (t *sqlTable) safeWriteEnabled() bool {
-	if t.base == nil || t.base.inst == nil || t.base.inst.Config.Setting == nil {
+	if t.base == nil || t.base.inst == nil || t.base.inst.Config.Settings == nil {
 		return true
 	}
-	raw, ok := t.base.inst.Config.Setting["safeWrite"]
+	raw, ok := t.base.inst.Config.Settings["safeWrite"]
 	if !ok {
 		return true
 	}
@@ -1930,7 +1930,7 @@ func (t *sqlTable) autoUpdateFieldName() string {
 	if len(t.fields) == 0 {
 		return ""
 	}
-	candidates := []string{"updatedAt", "changed", "updated_at"}
+	candidates := []string{"updatedAt", "changed", "updated_at", "updated"}
 	for _, name := range candidates {
 		if _, ok := t.fields[name]; ok {
 			return name
@@ -1938,7 +1938,7 @@ func (t *sqlTable) autoUpdateFieldName() string {
 	}
 	for key := range t.fields {
 		k := strings.ToLower(strings.TrimSpace(key))
-		if k == "updatedat" || k == "changed" || k == "updated_at" {
+		if k == "updatedat" || k == "changed" || k == "updated_at" || k == "updated" {
 			return key
 		}
 	}

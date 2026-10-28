@@ -139,8 +139,8 @@ func TestPipelineDispatchExtractsMultiplePathValues(t *testing.T) {
 
 func TestServerMaxConcurrencyRejectsOverload(t *testing.T) {
 	server := newServerState(ServerConfig{
-		Name:           defaultServerName,
-		MaxConcurrency: 1,
+		Name:    defaultServerName,
+		Options: ServerOptions{MaxConcurrency: 1},
 	}, map[string]struct{}{defaultServerName: {}})
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})

@@ -13,12 +13,22 @@ import (
 // Config is the HTTP module configuration. Direct fields describe the
 // implicit default server; Servers describes the explicit multi-server form.
 type Config struct {
-	Host              string
-	Port              int
-	Static            string
-	Require           bool
-	Setting           Map
-	Cross             Map
+	Host     string
+	Port     int
+	Domains  []string
+	Static   string
+	Require  bool
+	Settings Map
+	Cross    Map
+	Options  ServerOptions
+	TLS      TLSConfig
+	Sites    map[string]SiteConfig
+	Servers  map[string]ServerConfig
+}
+
+// ServerOptions holds server timeouts, request limits, and transport behavior.
+// Root options are defaults; each server can override individual fields.
+type ServerOptions struct {
 	ReadTimeout       time.Duration
 	ReadHeaderTimeout time.Duration
 	WriteTimeout      time.Duration
@@ -29,10 +39,7 @@ type Config struct {
 	MaxBodyBytes      int64
 	MaxConcurrency    int
 	Compress          bool
-	TLS               TLSConfig
 	TrustedProxies    []string
-	Sites             map[string]SiteConfig
-	Servers           map[string]ServerConfig
 }
 
 // TLSConfig enables HTTPS for one Web server when both files are present.
@@ -43,43 +50,36 @@ type TLSConfig struct {
 
 // ServerConfig describes one listener. Each server may host several Sites.
 type ServerConfig struct {
-	Name              string
-	Host              string
-	Port              int
-	Static            string
-	Setting           Map
-	Cross             Map
-	ReadTimeout       time.Duration
-	ReadHeaderTimeout time.Duration
-	WriteTimeout      time.Duration
-	IdleTimeout       time.Duration
-	RequestTimeout    time.Duration
-	ShutdownTimeout   time.Duration
-	MaxHeaderBytes    int
-	MaxBodyBytes      int64
-	MaxConcurrency    int
-	Compress          bool
-	TLS               TLSConfig
-	TrustedProxies    []string
-	Sites             map[string]SiteConfig
+	Name     string
+	Host     string
+	Port     int
+	Domains  []string
+	Static   string
+	Settings Map
+	Cross    Map
+	Options  ServerOptions
+	TLS      TLSConfig
+	Sites    map[string]SiteConfig
 }
 
-// SiteConfig describes one virtual host group inside a ServerConfig.
+// SiteConfig matches request domains inside one listener. Host in Config and
+// ServerConfig is exclusively the listener binding address.
 type SiteConfig struct {
-	Name    string
-	Static  string
-	Hosts   []string
-	Aliases []string
-	Setting Map
-	Cross   Map
+	Name     string
+	Static   string
+	Domains  []string
+	Aliases  []string
+	Settings Map
+	Cross    Map
 }
 
 func (c Config) Clone() Config {
 	copyOf := c
+	copyOf.Domains = append([]string(nil), c.Domains...)
 	copyOf.Static = c.Static
-	copyOf.Setting = c.Setting.Clone()
+	copyOf.Settings = c.Settings.Clone()
 	copyOf.Cross = c.Cross.Clone()
-	copyOf.TrustedProxies = append([]string(nil), c.TrustedProxies...)
+	copyOf.Options = c.Options.Clone()
 	copyOf.Sites = cloneSites(c.Sites)
 	copyOf.Servers = cloneServers(c.Servers)
 	return copyOf
@@ -87,10 +87,11 @@ func (c Config) Clone() Config {
 
 func (c ServerConfig) Clone() ServerConfig {
 	copyOf := c
+	copyOf.Domains = append([]string(nil), c.Domains...)
 	copyOf.Static = c.Static
-	copyOf.Setting = c.Setting.Clone()
+	copyOf.Settings = c.Settings.Clone()
 	copyOf.Cross = c.Cross.Clone()
-	copyOf.TrustedProxies = append([]string(nil), c.TrustedProxies...)
+	copyOf.Options = c.Options.Clone()
 	copyOf.Sites = cloneSites(c.Sites)
 	return copyOf
 }
@@ -98,33 +99,118 @@ func (c ServerConfig) Clone() ServerConfig {
 func (c SiteConfig) Clone() SiteConfig {
 	copyOf := c
 	copyOf.Static = c.Static
-	copyOf.Hosts = append([]string(nil), c.Hosts...)
+	copyOf.Domains = append([]string(nil), c.Domains...)
 	copyOf.Aliases = append([]string(nil), c.Aliases...)
-	copyOf.Setting = c.Setting.Clone()
+	copyOf.Settings = c.Settings.Clone()
 	copyOf.Cross = c.Cross.Clone()
 	return copyOf
 }
 
+func (o ServerOptions) Clone() ServerOptions {
+	o.TrustedProxies = append([]string(nil), o.TrustedProxies...)
+	return o
+}
+
+// configGroup merges legacy singular keys before canonical plural keys. A
+// plural value wins for the same field; unrelated legacy fields are preserved.
+func configGroup(section Map, plural, singular string) (Map, error) {
+	var result Map
+	for _, name := range []string{singular, plural} {
+		if value, exists := section[name]; exists {
+			fields, ok := asMap(value)
+			if !ok {
+				return nil, fmt.Errorf("web.%s must be an object", name)
+			}
+			result = mergeMap(result, fields)
+		}
+	}
+	return result, nil
+}
+
+var serverOptionNames = []string{
+	"read_timeout", "read_header_timeout", "write_timeout", "idle_timeout",
+	"request_timeout", "shutdown_timeout", "max_header_bytes", "max_body_bytes",
+	"max_concurrency", "compress", "trusted_proxies",
+}
+
+func parseOptions(section Map, defaults ServerOptions) (ServerOptions, error) {
+	// Old flat keys remain valid, but nested option/options fields take priority.
+	fields := Map{}
+	for _, name := range serverOptionNames {
+		if value, exists := section[name]; exists {
+			fields[name] = value
+		}
+	}
+	if value, exists := section["trusted_proxy"]; exists {
+		if _, present := fields["trusted_proxies"]; !present {
+			fields["trusted_proxies"] = value
+		}
+	}
+	for _, name := range []string{"option", "options"} {
+		if value, exists := section[name]; exists {
+			overlay, ok := asMap(value)
+			if !ok {
+				return ServerOptions{}, fmt.Errorf("web.%s must be an object", name)
+			}
+			for key, value := range overlay {
+				if key == "trusted_proxy" {
+					if _, present := overlay["trusted_proxies"]; present {
+						continue
+					}
+					key = "trusted_proxies"
+				}
+				known := false
+				for _, candidate := range serverOptionNames {
+					if key == candidate {
+						known = true
+						break
+					}
+				}
+				if !known {
+					return ServerOptions{}, fmt.Errorf("web.%s: unknown field %q", name, key)
+				}
+				fields[key] = value
+			}
+		}
+	}
+	return ServerOptions{
+		ReadTimeout:       firstDuration(fields["read_timeout"], defaults.ReadTimeout),
+		ReadHeaderTimeout: firstDuration(fields["read_header_timeout"], defaults.ReadHeaderTimeout),
+		WriteTimeout:      firstDuration(fields["write_timeout"], defaults.WriteTimeout),
+		IdleTimeout:       firstDuration(fields["idle_timeout"], defaults.IdleTimeout),
+		RequestTimeout:    firstDuration(fields["request_timeout"], defaults.RequestTimeout),
+		ShutdownTimeout:   firstDuration(fields["shutdown_timeout"], defaults.ShutdownTimeout),
+		MaxHeaderBytes:    int(firstInt64(fields["max_header_bytes"], int64(defaults.MaxHeaderBytes))),
+		MaxBodyBytes:      firstInt64(fields["max_body_bytes"], defaults.MaxBodyBytes),
+		MaxConcurrency:    int(firstInt64(fields["max_concurrency"], int64(defaults.MaxConcurrency))),
+		Compress:          firstBool(fields["compress"], defaults.Compress),
+		TrustedProxies:    firstStringList(fields["trusted_proxies"], defaults.TrustedProxies),
+	}, nil
+}
+
 func parseConfig(section Map) (Config, error) {
+	domains, _, err := configuredDomains(section, "domains", "domain")
+	if err != nil {
+		return Config{}, fmt.Errorf("web: %w", err)
+	}
+	options, err := parseOptions(section, ServerOptions{})
+	if err != nil {
+		return Config{}, err
+	}
+	settings, err := configGroup(section, "settings", "setting")
+	if err != nil {
+		return Config{}, err
+	}
 	config := Config{
-		Host:              stringValue(section["host"]),
-		Port:              intValue(section["port"]),
-		Static:            stringValue(section["static"]),
-		Require:           boolValue(section["require"]),
-		Setting:           mapValue(section["setting"]),
-		Cross:             mapValue(section["cross"]),
-		ReadTimeout:       durationValue(section["read_timeout"]),
-		ReadHeaderTimeout: durationValue(section["read_header_timeout"]),
-		WriteTimeout:      durationValue(section["write_timeout"]),
-		IdleTimeout:       durationValue(section["idle_timeout"]),
-		RequestTimeout:    durationValue(section["request_timeout"]),
-		ShutdownTimeout:   durationValue(section["shutdown_timeout"]),
-		MaxHeaderBytes:    intValue(section["max_header_bytes"]),
-		MaxBodyBytes:      int64Value(section["max_body_bytes"]),
-		MaxConcurrency:    intValue(section["max_concurrency"]),
-		Compress:          boolValue(section["compress"]),
-		TLS:               parseTLS(section["tls"]),
-		TrustedProxies:    stringList(firstPresent(section, "trusted_proxies", "trusted_proxy")),
+		Host:     stringValue(section["host"]),
+		Port:     intValue(section["port"]),
+		Domains:  domains,
+		Static:   stringValue(section["static"]),
+		Require:  boolValue(section["require"]),
+		Settings: settings,
+		Cross:    mapValue(section["cross"]),
+		Options:  options,
+		TLS:      parseTLS(section["tls"]),
 	}
 	if raw, ok := section["sites"]; ok {
 		sites, err := parseSites(raw)
@@ -161,25 +247,31 @@ func parseServers(raw any, defaults Config) (map[string]ServerConfig, error) {
 		if !ok {
 			return nil, fmt.Errorf("web server %q must be an object", name)
 		}
+		domains, present, err := configuredDomains(serverMap, "domains", "domain")
+		if err != nil {
+			return nil, fmt.Errorf("web server %q: %w", name, err)
+		}
+		if !present {
+			domains = append([]string(nil), defaults.Domains...)
+		}
+		options, err := parseOptions(serverMap, defaults.Options)
+		if err != nil {
+			return nil, fmt.Errorf("web server %q: %w", name, err)
+		}
+		settings, err := configGroup(serverMap, "settings", "setting")
+		if err != nil {
+			return nil, fmt.Errorf("web server %q: %w", name, err)
+		}
 		server := ServerConfig{
-			Name:              name,
-			Host:              firstString(serverMap["host"], defaults.Host),
-			Port:              firstInt(serverMap["port"], defaults.Port),
-			Static:            firstString(serverMap["static"], defaults.Static),
-			Setting:           mergeMap(defaults.Setting, mapValue(serverMap["setting"])),
-			Cross:             mergeMap(defaults.Cross, mapValue(serverMap["cross"])),
-			ReadTimeout:       firstDuration(serverMap["read_timeout"], defaults.ReadTimeout),
-			ReadHeaderTimeout: firstDuration(serverMap["read_header_timeout"], defaults.ReadHeaderTimeout),
-			WriteTimeout:      firstDuration(serverMap["write_timeout"], defaults.WriteTimeout),
-			IdleTimeout:       firstDuration(serverMap["idle_timeout"], defaults.IdleTimeout),
-			RequestTimeout:    firstDuration(serverMap["request_timeout"], defaults.RequestTimeout),
-			ShutdownTimeout:   firstDuration(serverMap["shutdown_timeout"], defaults.ShutdownTimeout),
-			MaxHeaderBytes:    firstInt(serverMap["max_header_bytes"], defaults.MaxHeaderBytes),
-			MaxBodyBytes:      firstInt64(serverMap["max_body_bytes"], defaults.MaxBodyBytes),
-			MaxConcurrency:    firstInt(serverMap["max_concurrency"], defaults.MaxConcurrency),
-			Compress:          firstBool(serverMap["compress"], defaults.Compress),
-			TLS:               mergeTLS(defaults.TLS, parseTLS(serverMap["tls"])),
-			TrustedProxies:    firstStringList(firstPresent(serverMap, "trusted_proxies", "trusted_proxy"), defaults.TrustedProxies),
+			Name:     name,
+			Host:     firstString(serverMap["host"], defaults.Host),
+			Port:     firstInt(serverMap["port"], defaults.Port),
+			Domains:  domains,
+			Static:   firstString(serverMap["static"], defaults.Static),
+			Settings: mergeMap(defaults.Settings, settings),
+			Cross:    mergeMap(defaults.Cross, mapValue(serverMap["cross"])),
+			Options:  options,
+			TLS:      mergeTLS(defaults.TLS, parseTLS(serverMap["tls"])),
 		}
 		if rawSites, exists := serverMap["sites"]; exists {
 			sites, err := parseSites(rawSites)
@@ -210,10 +302,18 @@ func parseSites(raw any) (map[string]SiteConfig, error) {
 			if !ok {
 				return nil, fmt.Errorf("site %q must be an object", name)
 			}
-			site.Hosts = stringList(firstPresent(siteMap, "hosts", "domains", "domain"))
+			domains, _, err := configuredDomains(siteMap, "domains", "domain", "hosts")
+			if err != nil {
+				return nil, fmt.Errorf("site %q: %w", name, err)
+			}
+			site.Domains = domains
 			site.Static = stringValue(siteMap["static"])
 			site.Aliases = stringList(firstPresent(siteMap, "aliases", "alias"))
-			site.Setting = mapValue(siteMap["setting"])
+			settings, err := configGroup(siteMap, "settings", "setting")
+			if err != nil {
+				return nil, fmt.Errorf("site %q: %w", name, err)
+			}
+			site.Settings = settings
 			site.Cross = mapValue(siteMap["cross"])
 		}
 		sites[name] = site
@@ -223,25 +323,16 @@ func parseSites(raw any) (map[string]SiteConfig, error) {
 
 func defaultServerConfig(config Config) ServerConfig {
 	return ServerConfig{
-		Name:              defaultServerName,
-		Host:              config.Host,
-		Port:              config.Port,
-		Static:            config.Static,
-		Setting:           config.Setting.Clone(),
-		Cross:             config.Cross.Clone(),
-		ReadTimeout:       config.ReadTimeout,
-		ReadHeaderTimeout: config.ReadHeaderTimeout,
-		WriteTimeout:      config.WriteTimeout,
-		IdleTimeout:       config.IdleTimeout,
-		RequestTimeout:    config.RequestTimeout,
-		ShutdownTimeout:   config.ShutdownTimeout,
-		MaxHeaderBytes:    config.MaxHeaderBytes,
-		MaxBodyBytes:      config.MaxBodyBytes,
-		MaxConcurrency:    config.MaxConcurrency,
-		Compress:          config.Compress,
-		TLS:               config.TLS,
-		TrustedProxies:    append([]string(nil), config.TrustedProxies...),
-		Sites:             cloneSites(config.Sites),
+		Name:     defaultServerName,
+		Host:     config.Host,
+		Port:     config.Port,
+		Domains:  append([]string(nil), config.Domains...),
+		Static:   config.Static,
+		Settings: config.Settings.Clone(),
+		Cross:    config.Cross.Clone(),
+		Options:  config.Options.Clone(),
+		TLS:      config.TLS,
+		Sites:    cloneSites(config.Sites),
 	}
 }
 
@@ -255,10 +346,10 @@ func validateServers(servers map[string]ServerConfig) error {
 		if server.Port < 0 || server.Port > 65535 {
 			return fmt.Errorf("web server %q has invalid port %d", name, server.Port)
 		}
-		if server.ReadTimeout < 0 || server.ReadHeaderTimeout < 0 || server.WriteTimeout < 0 || server.IdleTimeout < 0 || server.RequestTimeout < 0 || server.ShutdownTimeout < 0 {
+		if server.Options.ReadTimeout < 0 || server.Options.ReadHeaderTimeout < 0 || server.Options.WriteTimeout < 0 || server.Options.IdleTimeout < 0 || server.Options.RequestTimeout < 0 || server.Options.ShutdownTimeout < 0 {
 			return fmt.Errorf("web server %q has a negative timeout", name)
 		}
-		if server.MaxHeaderBytes < 0 || server.MaxBodyBytes < 0 || server.MaxConcurrency < 0 {
+		if server.Options.MaxHeaderBytes < 0 || server.Options.MaxBodyBytes < 0 || server.Options.MaxConcurrency < 0 {
 			return fmt.Errorf("web server %q has a negative request limit", name)
 		}
 		if (server.TLS.Cert == "") != (server.TLS.Key == "") {

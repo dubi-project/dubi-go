@@ -295,7 +295,7 @@ func (d *mongodbDriver) Connect(inst *Instance) (Connection, error) {
 func (c *mongodbConnection) Open() error {
 	dsn := strings.TrimSpace(c.instance.Config.Url)
 	if dsn == "" {
-		if v, ok := c.instance.Setting["dsn"].(string); ok {
+		if v, ok := c.instance.Settings["dsn"].(string); ok {
 			dsn = strings.TrimSpace(v)
 		}
 	}
@@ -305,7 +305,7 @@ func (c *mongodbConnection) Open() error {
 
 	dbName := strings.TrimSpace(c.instance.Config.Schema)
 	if dbName == "" {
-		if v, ok := c.instance.Setting["database"].(string); ok {
+		if v, ok := c.instance.Settings["database"].(string); ok {
 			dbName = strings.TrimSpace(v)
 		}
 	}
@@ -1098,7 +1098,7 @@ func (b *mongoBase) ensureWritable(op string) error {
 	if b == nil || b.inst == nil {
 		return nil
 	}
-	if b.inst.Config.ReadOnly || isReadOnlyMongoSetting(b.inst.Config.Setting) {
+	if b.inst.Config.ReadOnly || isReadOnlyMongoSetting(b.inst.Config.Settings) {
 		return Error(op, ErrValidation, fmt.Errorf("readonly data connection: %s", b.inst.Name))
 	}
 	return nil
@@ -1740,8 +1740,8 @@ func (b *mongoBase) collectIndexes(source string, table Table) []mongo.IndexMode
 		}
 		items = append(items, mongo.IndexModel{Keys: keys, Options: options.Index().SetName(name).SetUnique(idx.Unique)})
 	}
-	if table.Setting != nil {
-		if raw, ok := table.Setting["indexes"].([]Map); ok {
+	if table.Settings != nil {
+		if raw, ok := table.Settings["indexes"].([]Map); ok {
 			for i, idx := range raw {
 				fields := mongoParseStringList(idx["fields"])
 				if len(fields) == 0 {
@@ -2707,10 +2707,10 @@ func (t *mongoTable) blockUnsafeMutation(q Query) bool {
 }
 
 func (t *mongoTable) safeWriteEnabled() bool {
-	if t == nil || t.base == nil || t.base.inst == nil || t.base.inst.Config.Setting == nil {
+	if t == nil || t.base == nil || t.base.inst == nil || t.base.inst.Config.Settings == nil {
 		return true
 	}
-	raw, ok := t.base.inst.Config.Setting["safeWrite"]
+	raw, ok := t.base.inst.Config.Settings["safeWrite"]
 	if !ok {
 		return true
 	}
@@ -2797,7 +2797,7 @@ func (t *mongoTable) autoUpdateFieldName() string {
 	if len(t.fields) == 0 {
 		return ""
 	}
-	candidates := []string{"updatedAt", "changed", "updated_at"}
+	candidates := []string{"updatedAt", "changed", "updated_at", "updated"}
 	for _, name := range candidates {
 		if _, ok := t.fields[name]; ok {
 			return name
@@ -2805,7 +2805,7 @@ func (t *mongoTable) autoUpdateFieldName() string {
 	}
 	for key := range t.fields {
 		k := strings.ToLower(strings.TrimSpace(key))
-		if k == "updatedat" || k == "changed" || k == "updated_at" {
+		if k == "updatedat" || k == "changed" || k == "updated_at" || k == "updated" {
 			return key
 		}
 	}
@@ -4013,11 +4013,11 @@ func mongoParseIntAny(v Any) (int, bool) {
 }
 
 func (b *mongoBase) scanBatchSize() int64 {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return 0
 	}
 	for _, key := range []string{"scanBatch", "scan_batch"} {
-		if raw, ok := b.inst.Config.Setting[key]; ok {
+		if raw, ok := b.inst.Config.Settings[key]; ok {
 			if vv, ok := mongoParseInt64(raw); ok && vv > 0 {
 				return vv
 			}
@@ -4027,10 +4027,10 @@ func (b *mongoBase) scanBatchSize() int64 {
 }
 
 func (b *mongoBase) cacheEnabled() bool {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return false
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return false
 	}
@@ -4057,10 +4057,10 @@ func (b *mongoBase) cacheEnabled() bool {
 }
 
 func (b *mongoBase) cacheTTL() time.Duration {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return 0
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return 0
 	}
@@ -4088,10 +4088,10 @@ func (b *mongoBase) cacheTTL() time.Duration {
 }
 
 func (b *mongoBase) cacheCapacity() int {
-	if b == nil || b.inst == nil || b.inst.Config.Setting == nil {
+	if b == nil || b.inst == nil || b.inst.Config.Settings == nil {
 		return 0
 	}
-	raw, ok := b.inst.Config.Setting["cache"]
+	raw, ok := b.inst.Config.Settings["cache"]
 	if !ok {
 		return 0
 	}

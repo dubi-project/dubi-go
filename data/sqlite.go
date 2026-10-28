@@ -32,7 +32,7 @@ func (d *sqliteDriver) Connect(inst *Instance) (Connection, error) {
 func (c *sqliteConnection) Open() error {
 	dsn := strings.TrimSpace(c.instance.Config.Url)
 	if dsn == "" {
-		if v, ok := c.instance.Setting["dsn"].(string); ok {
+		if v, ok := c.instance.Settings["dsn"].(string); ok {
 			dsn = v
 		}
 	}

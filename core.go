@@ -16,7 +16,7 @@ type Method struct {
 	Args     Vars
 	Data     Vars
 	Action   any
-	Setting  Map
+	Settings Map
 }
 
 func (Method) Scope() string { return "core:method" }
@@ -30,19 +30,25 @@ type Service struct {
 	Args     Vars
 	Data     Vars
 	Action   any
-	Setting  Map
+	Settings Map
 }
 
 func (Service) Scope() string { return "core:service" }
 
 type coreModule struct {
-	methods  map[string]Method
-	services map[string]Service
+	methods         map[string]Method
+	services        map[string]Service
+	libraries       map[string]Library
+	triggers        map[string][]Trigger
+	triggerMethods  []string
+	triggerSequence uint64
 }
 
 var core = &coreModule{
-	methods:  make(map[string]Method),
-	services: make(map[string]Service),
+	methods:   make(map[string]Method),
+	services:  make(map[string]Service),
+	libraries: make(map[string]Library),
+	triggers:  make(map[string][]Trigger),
 }
 
 func init() {
@@ -63,20 +69,48 @@ func (c *coreModule) Register(name string, value any) {
 		if item != nil {
 			c.services[name] = *item
 		}
+	case Library:
+		c.registerLibrary(name, item)
+	case *Library:
+		if item != nil {
+			c.registerLibrary(name, *item)
+		}
+	case Trigger:
+		c.registerTrigger(name, item)
+	case *Trigger:
+		if item != nil {
+			c.registerTrigger(name, *item)
+		}
 	}
 }
 
 func (c *coreModule) Reset() {
+	triggers.shutdown()
+	triggers.mu.Lock()
+	triggers.methods, triggers.ctx, triggers.cancel = nil, nil, nil
+	triggers.mu.Unlock()
 	c.methods = make(map[string]Method)
 	c.services = make(map[string]Service)
+	c.libraries = make(map[string]Library)
+	c.triggers = make(map[string][]Trigger)
+	c.triggerMethods = nil
+	c.triggerSequence = 0
 }
 
-func (*coreModule) Config(Map) error     { return nil }
-func (*coreModule) Setup(*Context) error { return nil }
-func (*coreModule) Open(*Context) error  { return nil }
-func (*coreModule) Start(*Context) error { return nil }
-func (*coreModule) Stop(*Context) error  { return nil }
-func (*coreModule) Close(*Context) error { return nil }
+func (c *coreModule) Config(Map) error {
+	triggers.shutdown()
+	for _, name := range c.triggerMethods {
+		delete(c.methods, name)
+	}
+	c.triggerMethods = nil
+	c.triggers = make(map[string][]Trigger)
+	return nil
+}
+func (c *coreModule) Setup(*Context) error { c.setupTriggers(); return nil }
+func (*coreModule) Open(*Context) error    { return nil }
+func (*coreModule) Start(*Context) error   { return nil }
+func (*coreModule) Stop(*Context) error    { return nil }
+func (*coreModule) Close(*Context) error   { return nil }
 
 // Invoke calls a local Method or Service on the Runtime.
 func (rt *Runtime) Invoke(meta *Meta, name string, value Map) (Map, Res) {
@@ -114,7 +148,7 @@ func invokeRuntime(meta *Meta, name string, value Map, methodOnly bool) (Map, Re
 	return rt.invoke(meta, name, value, false)
 }
 
-func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (Map, Res) {
+func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool, overrides ...Map) (Map, Res) {
 	if meta == nil {
 		meta = NewMeta()
 	}
@@ -123,12 +157,12 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (
 	}
 
 	var action Method
-	var setting Map
+	var settings Map
 	var dataDefinition Vars
 	var config any
 	if method, ok := core.methods[name]; ok {
 		action = method
-		setting = method.Setting
+		settings = method.Settings
 		dataDefinition = method.Data
 		config = method
 	} else if !methodOnly {
@@ -140,9 +174,9 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (
 				Args:     service.Args,
 				Data:     service.Data,
 				Action:   service.Action,
-				Setting:  service.Setting,
+				Settings: service.Settings,
 			}
-			setting = service.Setting
+			settings = service.Settings
 			dataDefinition = service.Data
 			config = service
 		} else {
@@ -151,15 +185,27 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool) (
 	} else {
 		return nil, ResultOf(1, "method not found: "+name)
 	}
+	settings = cloneConfigMap(settings)
+	for _, overlay := range overrides {
+		if overlay == nil {
+			continue
+		}
+		if settings == nil {
+			settings = Map{}
+		}
+		for key, value := range overlay {
+			settings[key] = cloneConfigValue(value)
+		}
+	}
 
 	ctx := &Context{
-		Context: meta.Context(),
-		Meta:    meta,
-		Name:    name,
-		Config:  config,
-		Setting: setting.Clone(),
-		Value:   value,
-		Args:    value.Clone(),
+		Context:  meta.Context(),
+		Meta:     meta,
+		Name:     name,
+		Config:   config,
+		Settings: settings,
+		Value:    value,
+		Args:     value.Clone(),
 	}
 	if len(action.Args) > 0 {
 		args, result := rt.Mapping(action.Args, value)

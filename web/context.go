@@ -57,12 +57,12 @@ type Context struct {
 	Files    map[string][]*multipart.FileHeader
 	RemoteIP string
 
-	Code    int
-	Body    any
-	Data    Map
-	Setting Map
-	Config  Router
-	Locals  Map
+	Code     int
+	Body     any
+	Data     Map
+	Settings Map
+	Config   Router
+	Locals   Map
 
 	nexts        []func(*Context)
 	index        int
@@ -442,7 +442,7 @@ func initContext(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.R
 		clear(ctx.Files)
 	}
 	ctx.Data = resetMap(ctx.Data)
-	ctx.Setting = resetMap(ctx.Setting)
+	ctx.Settings = resetMap(ctx.Settings)
 	ctx.Config = Router{}
 	ctx.Locals = resetMap(ctx.Locals)
 	ctx.nexts = nil
@@ -504,7 +504,7 @@ func releaseContext(ctx *Context) {
 	ctx.Config = Router{}
 	ctx.Body = nil
 	ctx.Data = resetMap(ctx.Data)
-	ctx.Setting = resetMap(ctx.Setting)
+	ctx.Settings = resetMap(ctx.Settings)
 	ctx.Locals = resetMap(ctx.Locals)
 	ctx.Value = resetMap(ctx.Value)
 	ctx.Args = resetMap(ctx.Args)

@@ -27,17 +27,18 @@ func (e Entry) Key() string {
 // Registry stores modules, services, routes, profiles, and application
 // registrations. The package-level Registry is the process registry.
 type Registry struct {
-	mu     sync.RWMutex
-	items  map[string]any
-	frozen bool
+	mu       sync.RWMutex
+	items    map[string]any
+	triggers map[string][]any
+	frozen   bool
 }
 
 func NewRegistry() *Registry {
 	return &Registry{items: make(map[string]any)}
 }
 
-// Register adds or replaces a named registration. Replacement is deliberate:
-// it permits an application or test runtime to override a built-in entry.
+// Register adds or replaces an ordinary registration. Trigger registrations
+// append under their logical name so independent packages can listen together.
 func (r *Registry) Register(name string, value any) {
 	if r == nil {
 		panic("dubi: nil registry")
@@ -45,6 +46,9 @@ func (r *Registry) Register(name string, value any) {
 	name = normalizeName(name)
 	if value == nil {
 		panic("dubi: cannot register nil value")
+	}
+	if trigger, ok := value.(*Trigger); ok && trigger == nil {
+		panic("dubi: cannot register nil trigger")
 	}
 	r.mu.Lock()
 	if r.frozen {
@@ -54,7 +58,14 @@ func (r *Registry) Register(name string, value any) {
 	if r.items == nil {
 		r.items = make(map[string]any)
 	}
-	r.items[name] = value
+	if isTrigger(value) {
+		if r.triggers == nil {
+			r.triggers = make(map[string][]any)
+		}
+		r.triggers[name] = append(r.triggers[name], value)
+	} else {
+		r.items[name] = value
+	}
 	r.mu.Unlock()
 }
 
@@ -90,12 +101,19 @@ func (r *Registry) unfreeze() {
 	r.mu.Unlock()
 }
 
+// Lookup returns the ordinary registration, or the latest Trigger if no
+// ordinary registration uses the name. Entries exposes every Trigger listener.
 func (r *Registry) Lookup(name string) (any, bool) {
 	if r == nil {
 		return nil, false
 	}
 	r.mu.RLock()
 	v, ok := r.items[name]
+	if !ok {
+		if listeners := r.triggers[name]; len(listeners) > 0 {
+			v, ok = listeners[len(listeners)-1], true
+		}
+	}
 	r.mu.RUnlock()
 	return v, ok
 }
@@ -109,8 +127,13 @@ func (r *Registry) Entries() []Entry {
 	for name, value := range r.items {
 		entries = append(entries, Entry{Name: name, Value: value, Scope: registrationScope(value)})
 	}
+	for name, listeners := range r.triggers {
+		for _, value := range listeners {
+			entries = append(entries, Entry{Name: name, Value: value, Scope: registrationScope(value)})
+		}
+	}
 	r.mu.RUnlock()
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries
 }
 

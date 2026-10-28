@@ -2,6 +2,10 @@
 
 `web` 是 Dubi 的标准 HTTP 请求入口模块。它负责监听 HTTP、匹配 Server/Site/Router、执行 Filter 和 Handler，并把请求参数转换成 `base.Map`。
 
+启动成功后，每个 Web Server 会通过 Go 标准 logger 输出实际监听地址和 Site 数量。
+所有模块启动完成后，Runtime 输出一条 `dubi: ready` 摘要，包含模块数、选中注册数、
+启动耗时及节点身份；启动失败不会输出就绪摘要。可以用 `log.SetOutput` 统一重定向日志。
+
 ## 注册路由
 
 ```go
@@ -27,6 +31,19 @@ web:
   port: 8080
 ```
 
+`host` 表示监听绑定地址，默认 `0.0.0.0`，不用于匹配业务域名。
+
+单域名可以直接写 `web.domain`；不配置域名且没有 Site 时，接受任意请求域名：
+
+```yaml
+web:
+  port: 8080
+  domain: example.com
+```
+
+配置 Site 后，未单独配置域名的 Site 自动使用 `<site key>.<web.domain>`。
+例如 `sites.api` 使用 `api.example.com`；Site 的显式域名可以覆盖这个默认值。
+
 一个 Server 可以配置多个 Site：
 
 ```yaml
@@ -34,12 +51,36 @@ web:
   port: 8080
   sites:
     www:
-      hosts:
+      domains:
         - www.example.com
     api:
-      hosts:
+      domains:
         - api.example.com
 ```
+
+Site 使用 `domains` 指定匹配域名，支持字符串、列表和 `*.example.com` 通配符。
+兼容单数 `domain` 和旧配置键 `hosts`；同时出现时优先级为 `domains` > `domain` > `hosts`。
+Go 字段统一为 `Config.Domains`、`ServerConfig.Domains`、`SiteConfig.Domains`。
+
+Web/Server 和 Site 都没有配置域名时，按请求域名首段匹配 Site key：
+
+```yaml
+web:
+  port: 8080
+  sites:
+    api: {}
+    www: {}
+```
+
+`api.abcd.com`、`api.test.abcd.com` 都会命中 `sites.api`。
+只有未配置域名的 Site 才参与自动匹配；IP 地址不会被拆成 Site 名称。
+匹配优先级为：显式精确域名、显式通配子域名、自动 Site 名称、显式 `*` 兜底。
+未命中任何 Site 时返回 404，不会自动回退到第一个 Site。
+
+多 Server 继承根级 `web.domain` / `web.domains`，可以各自覆盖；显式空值取消继承，
+恢复按 Site key 自动匹配。域名匹配只发生在当前监听 Server 内。
+URL 生成优先使用当前请求域名；自动 Site 之间跳转时替换 Site 前缀，
+保留其余域名和请求端口，例如从 `api.test.abcd.com` 生成 `www.test.abcd.com`。
 
 需要多个监听端口时使用 `servers`：
 
@@ -50,31 +91,33 @@ web:
       port: 8080
       sites:
         www:
-          hosts: [www.example.com]
+          domains: [www.example.com]
         api:
-          hosts: [api.example.com]
+          domains: [api.example.com]
     internal:
       port: 8081
 ```
 
-`setting`、`cross` 可以出现在 `web`、Server 和 Site 层级。下层配置覆盖上层同名键。
+`settings`、`cross` 可以出现在 `web`、Server 和 Site 层级。下层配置覆盖上层同名键。
+`settings` 会与 Router 的 `Settings` 合并后提供给 `ctx.Settings`。
 
 Server 还支持请求边界和连接配置：
 
 ```yaml
 web:
   port: 8080
-  request_timeout: 10s
-  read_timeout: 5s
-  read_header_timeout: 2s
-  write_timeout: 30s
-  idle_timeout: 60s
-  shutdown_timeout: 5s
-  max_header_bytes: 1048576
-  max_body_bytes: 10485760
-  max_concurrency: 256
-  compress: true
-  trusted_proxies: ["127.0.0.1", "10.0.0.0/8"]
+  options:
+    request_timeout: 10s
+    read_timeout: 5s
+    read_header_timeout: 2s
+    write_timeout: 30s
+    idle_timeout: 60s
+    shutdown_timeout: 5s
+    max_header_bytes: 1048576
+    max_body_bytes: 10485760
+    max_concurrency: 256
+    compress: true
+    trusted_proxies: ["127.0.0.1", "10.0.0.0/8"]
   tls:
     cert: ./certs/server.crt
     key: ./certs/server.key
@@ -82,6 +125,30 @@ web:
 
 `request_timeout` 会绑定到业务调用使用的 Context。`read_header_timeout` 用于限制读取请求头的最长时间，防止慢连接长期占用连接资源。`max_body_bytes` 超限返回 413。TLS 需要同时配置证书和私钥；`trusted_proxies` 为空时不会信任请求头中的转发地址。
 `max_concurrency` 限制单个 Server 同时处理的请求数，超限立即返回 503，并带有 `Retry-After: 1`。
+
+多 Server 时，`web.options` 提供默认值，`web.servers.<name>.options` 逐字段覆盖。
+显式的 `0`、`false`、空代理列表可以覆盖继承值。Site 不单独设置监听服务选项。
+Go 配置对象对应 `Config.Options` / `ServerConfig.Options`，类型为 `ServerOptions`。
+
+配置键统一使用 `options`、`settings`，同时兼容单数 `option`、`setting`。
+同层单复数配置按字段合并，复数键优先；旧的顶层超时、限制等字段也保留兼容，
+优先级为 `options` > `option` > 旧顶层字段。Go 字段统一为 `Options`、`Settings`。
+
+```yaml
+web:
+  options:
+    read_header_timeout: 2s
+    max_concurrency: 256
+  servers:
+    public:
+      port: 8080
+    internal:
+      port: 8081
+      options:
+        max_concurrency: 0
+      settings:
+        visibility: internal
+```
 
 ## 路由归属
 
@@ -114,6 +181,9 @@ web.Router{
 - `Loading` 在路由 Action 前调用 Method/Service，并把结果放入 `ctx.Locals`。
 - `Data` 在 `Answer` 输出前映射响应数据。
 - `ctx.Answer(result, data)` 使用 Dubi 的 `Res` 生成统一 JSON 结果。
+- `data` 为 nil 或空 Map 时省略该字段；未传 data 时使用 `ctx.Data`，响应过滤器仍可修改。
+- `ctx.Answer(nil, Map{})` 表示成功，只返回 `code: 0` 和 `time`，省略 `text`、`data`。
+  显式传入 `dubi.OK` 时保留成功状态的多语言文本。
 
 ```go
 web.Router{

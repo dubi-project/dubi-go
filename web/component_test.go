@@ -10,19 +10,19 @@ func TestExpandRouterUsesParentDefaultsAndMethodOverrides(t *testing.T) {
 	baseAction := func(*Context) {}
 	getAction := func(*Context) {}
 	routes := expandRouters("user", Router{
-		Uri:     "/users/{id}",
-		Args:    Vars{"id": {Default: "parent"}, "page": {Default: 1}},
-		Data:    Vars{"kind": {Default: "user"}},
-		Setting: Map{"auth": true, "format": "json"},
-		Action:  baseAction,
+		Uri:      "/users/{id}",
+		Args:     Vars{"id": {Default: "parent"}, "page": {Default: 1}},
+		Data:     Vars{"kind": {Default: "user"}},
+		Settings: Map{"auth": true, "format": "json"},
+		Action:   baseAction,
 		Routing: Routing{
 			"GET": {
-				Args:    Vars{"id": {Default: "get"}},
-				Setting: Map{"format": "full"},
-				Action:  getAction,
+				Args:     Vars{"id": {Default: "get"}},
+				Settings: Map{"format": "full"},
+				Action:   getAction,
 			},
 			"POST": {
-				Setting: Map{"write": true},
+				Settings: Map{"write": true},
 			},
 		},
 	})
@@ -33,11 +33,11 @@ func TestExpandRouterUsesParentDefaultsAndMethodOverrides(t *testing.T) {
 	if get.Method != "GET" || get.Uri != "/users/{id}" || get.Action == nil {
 		t.Fatalf("get route = %#v", get)
 	}
-	if get.Args["id"].Default != "get" || get.Args["page"].Default != 1 || get.Setting["auth"] != true || get.Setting["format"] != "full" {
-		t.Fatalf("get inheritance = %#v %#v", get.Args, get.Setting)
+	if get.Args["id"].Default != "get" || get.Args["page"].Default != 1 || get.Settings["auth"] != true || get.Settings["format"] != "full" {
+		t.Fatalf("get inheritance = %#v %#v", get.Args, get.Settings)
 	}
 	post := routes["user.post"]
-	if post.Action != nil || post.Setting["auth"] != true || post.Setting["write"] != true {
+	if post.Action != nil || post.Settings["auth"] != true || post.Settings["write"] != true {
 		t.Fatalf("post inheritance = %#v", post)
 	}
 	if _, ok := routes["user.*"]; !ok {

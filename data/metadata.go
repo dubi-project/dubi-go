@@ -36,7 +36,7 @@ func cloneVars(in Vars) Vars {
 	for k, v := range in {
 		item := v
 		item.Options = cloneMap(v.Options)
-		item.Setting = cloneMap(v.Setting)
+		item.Settings = cloneMap(v.Settings)
 		item.Children = cloneVars(v.Children)
 		out[k] = item
 	}

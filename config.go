@@ -196,8 +196,16 @@ func cloneConfigValue(value any) any {
 			out[index] = cloneConfigValue(value)
 		}
 		return out
+	case List:
+		out := make(List, len(item))
+		for index, value := range item {
+			out[index] = cloneConfigValue(value)
+		}
+		return out
 	case []string:
 		return append([]string(nil), item...)
+	case []byte:
+		return append([]byte(nil), item...)
 	case []Map:
 		out := make([]Map, len(item))
 		for index, value := range item {

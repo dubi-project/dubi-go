@@ -14,7 +14,7 @@ type Var struct {
 	Check     string
 	Collation string
 	Comment   string
-	Setting   Map
+	Settings  Map
 	Options   Map
 	Required  bool
 	Nullable  bool
@@ -32,7 +32,7 @@ type Vars map[string]Var
 
 func (v Var) Clone() Var {
 	v.Alias = append([]string(nil), v.Alias...)
-	v.Setting = v.Setting.Clone()
+	v.Settings = v.Settings.Clone()
 	v.Options = v.Options.Clone()
 	v.Children = v.Children.Clone()
 	return v
@@ -41,7 +41,7 @@ func (v Var) Clone() Var {
 func (v Var) IsZero() bool {
 	return !v.nilValue && v.Name == "" && v.Desc == "" && v.Type == "" && len(v.Alias) == 0 &&
 		v.Default == nil && !v.Unique && v.Check == "" && v.Collation == "" && v.Comment == "" &&
-		len(v.Setting) == 0 && len(v.Options) == 0 && !v.Required && !v.Nullable && v.Encode == "" &&
+		len(v.Settings) == 0 && len(v.Options) == 0 && !v.Required && !v.Nullable && v.Encode == "" &&
 		v.Decode == "" && len(v.Children) == 0 && v.Valid == nil && v.Value == nil &&
 		v.Empty == nil && v.Error == nil
 }
