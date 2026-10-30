@@ -360,7 +360,6 @@ type sitePipeline struct {
 	handlers      []Handler
 	chain         []func(*Context)
 	requestChain  []func(*Context)
-	executeChain  []func(*Context)
 	response      []func(*Context)
 	outcomes      map[string][]func(*Context)
 }
@@ -472,6 +471,7 @@ func (s *serverState) isTrustedProxy(address string) bool {
 }
 
 func (s *serverState) register(routers map[string]Router, filters map[string]Filter, handlers map[string]Handler) error {
+	registeredRoutes := make(map[string][]*routeHandler)
 	for _, name := range sortedKeys(routers) {
 		router := routers[name]
 		compiledRouters := expandRouters(name, router)
@@ -516,71 +516,63 @@ func (s *serverState) register(routers map[string]Router, filters map[string]Fil
 					}
 					registeredPattern := pattern
 					pathParameters := compilePathParameters(uri)
-					registered := &routeHandler{
-						serve: func(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
-							request.Pattern = registeredPattern
-							ctx.Request = request
-							ctx.Writer = writer
-							ctx.Name = route
-							ctx.Config = handler
-							ctx.Settings = assignMap(ctx.Settings, routeSettings)
-							ctx.Locals = resetMap(ctx.Locals)
-							ctx.responseVars = handler.Data
-							ctx.responsePlan = responsePlan
-							ctx.Params = resetMap(ctx.Params)
-							pathParamsInto(ctx.Params, request, pathParameters)
-							if !authorizeRouter(ctx, handler) {
-								runRouterOutcome(ctx, handler)
+					registered := &routeHandler{actions: actions}
+					registered.bind = func(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+						request.Pattern = registeredPattern
+						ctx.Request = request
+						ctx.Writer = writer
+						ctx.Name = route
+						ctx.Config = handler
+						ctx.Settings = assignMap(ctx.Settings, routeSettings)
+						ctx.routeHandler = registered
+						ctx.responseVars = handler.Data
+						ctx.responsePlan = responsePlan
+						ctx.Params = resetMap(ctx.Params)
+						pathParamsInto(ctx.Params, request, pathParameters)
+					}
+					registered.serve = func(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
+						ctx.Query = resetMap(ctx.Query)
+						queryValuesInto(ctx.Query, request)
+						values := assignMap(ctx.Value, ctx.Params)
+						for key, value := range ctx.Query {
+							values[key] = value
+						}
+						form, files, err := requestFormValuesInto(request, ctx.Form)
+						if err != nil {
+							ctx.Failed(dubi.ErrorResult(err))
+							var tooLarge *stdhttp.MaxBytesError
+							if errors.As(err, &tooLarge) {
+								ctx.Code = stdhttp.StatusRequestEntityTooLarge
+							}
+							return
+						}
+						ctx.Form = form
+						ctx.Files = assignFiles(ctx.Files, files)
+						for key, value := range form {
+							values[key] = value
+						}
+						ctx.Value = values
+						if !authorizeRouter(ctx, handler) {
+							return
+						}
+						ctx.Args = assignMap(ctx.Args, values)
+						if len(handler.Args) > 0 {
+							args, result := dubi.ApplyMapping(argumentPlan, values)
+							if result != nil && result.Fail() {
+								ctx.Failed(result)
 								return
 							}
-							ctx.Query = resetMap(ctx.Query)
-							queryValuesInto(ctx.Query, request)
-							values := assignMap(ctx.Value, ctx.Params)
-							for key, value := range ctx.Query {
-								values[key] = value
-							}
-							form, files, err := requestFormValuesInto(request, ctx.Form)
-							if err != nil {
-								ctx.Failed(dubi.ErrorResult(err))
-								var tooLarge *stdhttp.MaxBytesError
-								if errors.As(err, &tooLarge) {
-									ctx.Code = stdhttp.StatusRequestEntityTooLarge
-								}
-								runRouterOutcome(ctx, handler)
-								return
-							}
-							ctx.Form = form
-							ctx.Files = assignFiles(ctx.Files, files)
-							for key, value := range form {
-								values[key] = value
-							}
-							ctx.Value = values
-							ctx.Args = assignMap(ctx.Args, values)
-							if len(handler.Args) > 0 {
-								args, result := dubi.ApplyMapping(argumentPlan, values)
-								if result != nil && result.Fail() {
-									ctx.Failed(result)
-									runRouterOutcome(ctx, handler)
-									return
-								}
-								ctx.Args = args
-							}
-							if !runLoading(ctx, handler.Loading) {
-								runRouterOutcome(ctx, handler)
-								return
-							}
-							if len(actions) > 0 {
-								runChain(ctx, actions)
-								runRouterOutcome(ctx, handler)
-								return
-							}
-							ctx.NotFound()
-							runRouterOutcome(ctx, handler)
-						},
+							ctx.Args = args
+						}
+						if !runLoading(ctx, handler.Loading) {
+							return
+						}
+						registered.execute(ctx)
 					}
 					if err := registerHandler(mux, registeredPattern, registered); err != nil {
 						return fmt.Errorf("web route %q: %w", compiledName, err)
 					}
+					registeredRoutes[site] = append(registeredRoutes[site], registered)
 					// Keep a methodless path index for fast 404/405 detection.
 					// Path conflicts are harmless here: any matching path is
 					// enough to distinguish a method mismatch from a 404.
@@ -615,7 +607,7 @@ func (s *serverState) register(routers map[string]Router, filters map[string]Fil
 			s.handlers[site] = append(s.handlers[site], handler)
 		}
 	}
-	s.compilePipelines()
+	s.compilePipelines(registeredRoutes)
 	return nil
 }
 
@@ -634,7 +626,14 @@ func registerHandler(mux *stdhttp.ServeMux, pattern string, handler stdhttp.Hand
 // Web pipeline pass its already-acquired Context without a request context
 // allocation on every request.
 type routeHandler struct {
-	serve func(*Context, stdhttp.ResponseWriter, *stdhttp.Request)
+	bind         func(*Context, stdhttp.ResponseWriter, *stdhttp.Request)
+	serve        func(*Context, stdhttp.ResponseWriter, *stdhttp.Request)
+	actions      []func(*Context)
+	executeChain []func(*Context)
+}
+
+func (h *routeHandler) execute(ctx *Context) {
+	runChain(ctx, h.executeChain)
 }
 
 func (h *routeHandler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhttp.Request) {
@@ -648,6 +647,9 @@ func (h *routeHandler) ServeHTTP(writer stdhttp.ResponseWriter, request *stdhttp
 func (h *routeHandler) ServeContext(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 	if h == nil || h.serve == nil {
 		return
+	}
+	if h.bind != nil {
+		h.bind(ctx, writer, request)
 	}
 	h.serve(ctx, writer, request)
 }
@@ -668,7 +670,7 @@ func sortedKeys[T any](values map[string]T) []string {
 // compilePipelines moves the stable part of request dispatch out of the hot
 // path. The process module is configured once, while its request Context is
 // created for each request.
-func (s *serverState) compilePipelines() {
+func (s *serverState) compilePipelines(registeredRoutes map[string][]*routeHandler) {
 	for site, mux := range s.muxes {
 		items := append([]Filter{}, s.filters[""]...)
 		if site != "" {
@@ -717,6 +719,7 @@ func (s *serverState) compilePipelines() {
 				p.outcomes["denied"] = append(p.outcomes["denied"], item.Denied)
 			}
 		}
+		var executeFilters []func(*Context)
 		for _, item := range items {
 			if item.Serve != nil {
 				p.chain = append(p.chain, item.Serve)
@@ -725,52 +728,52 @@ func (s *serverState) compilePipelines() {
 				p.requestChain = append(p.requestChain, item.Request)
 			}
 			if item.Execute != nil {
-				p.executeChain = append(p.executeChain, item.Execute)
+				executeFilters = append(executeFilters, item.Execute)
 			}
 			if item.Response != nil {
 				p.response = append(p.response, item.Response)
 			}
 		}
-		p.executeChain = append(p.executeChain, func(ctx *Context) {
-			if selected, ok := ctx.routeHandler.(*routeHandler); ok {
-				selected.ServeContext(ctx, ctx.Writer, ctx.Request)
-				return
+		for _, route := range registeredRoutes[site] {
+			route.executeChain = append([]func(*Context){}, executeFilters...)
+			route.executeChain = append(route.executeChain, route.actions...)
+			if len(route.actions) == 0 {
+				route.executeChain = append(route.executeChain, func(ctx *Context) { ctx.NotFound() })
 			}
-			if ctx.routeHandler != nil {
-				ctx.Request.Pattern = ctx.routePattern
-				ctx.routeHandler.ServeHTTP(ctx.Writer, ctx.Request)
-				return
-			}
-			p.mux.ServeHTTP(ctx.Writer, ctx.Request)
-		})
+		}
 		p.requestChain = append(p.requestChain, func(ctx *Context) {
+			if selected, ok := ctx.routeHandler.(*routeHandler); ok {
+				selected.serve(ctx, ctx.Writer, ctx.Request)
+			}
+		})
+		p.response = append(p.response, func(ctx *Context) { p.finish(ctx) })
+		p.chain = append(p.chain, func(ctx *Context) {
+			if s.applyCORS(ctx.Writer, ctx.Request, site) {
+				p.respond(ctx)
+				return
+			}
 			ctx.routeHandler = nil
-			routeHandler, pattern := p.mux.Handler(ctx.Request)
+			matched, pattern := p.mux.Handler(ctx.Request)
 			ctx.routePattern = pattern
 			if pattern == "" && !p.hasPathRoute(ctx.Request) {
-				if p.serveStatic(ctx) {
-					defer ctx.closeStreams()
-					p.finish(ctx)
-					return
+				if !p.serveStatic(ctx) {
+					ctx.NotFound()
 				}
-				ctx.NotFound()
+				p.respond(ctx)
 				return
 			}
 			// Keep the selected handler for both a normal match and a method
 			// mismatch. The latter is the native ServeMux 405 handler, including
 			// its Allow header; invoking it directly avoids a second tree lookup.
-			ctx.routeHandler = routeHandler
-			runChain(ctx, p.executeChain)
-		})
-		p.chain = append(p.chain, func(ctx *Context) {
-			runChain(ctx, p.requestChain)
-			if ctx.handling != "" {
-				p.handleOutcome(ctx)
+			ctx.routeHandler = matched
+			if selected, ok := matched.(*routeHandler); ok {
+				selected.bind(ctx, ctx.Writer, ctx.Request)
+				runChain(ctx, p.requestChain)
+			} else {
+				ctx.Request.Pattern = pattern
+				matched.ServeHTTP(ctx.Writer, ctx.Request)
 			}
-		})
-		p.chain = append(p.chain, func(ctx *Context) {
-			ctx.responseRan = true
-			runChain(ctx, p.response)
+			p.respond(ctx)
 		})
 
 		s.pipelines[site] = p
@@ -965,7 +968,8 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 		stdhttp.NotFound(writer, request)
 		return
 	}
-	if s.applyCORS(writer, request, site) {
+	noPipeline := len(s.filters) == 0 && len(s.handlers) == 0
+	if noPipeline && s.applyCORS(writer, request, site) {
 		return
 	}
 	if s.concurrency != nil {
@@ -982,7 +986,6 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 		stdhttp.NotFound(writer, request)
 		return
 	}
-	noPipeline := len(s.filters) == 0 && len(s.handlers) == 0
 	var matchedHandler stdhttp.Handler
 	var matchedPattern string
 	if noPipeline && p.staticRoot != "" {
@@ -1027,6 +1030,14 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 	} else {
 		runChain(ctx, p.chain)
 	}
+	if !ctx.responseRan {
+		p.respond(ctx)
+	}
+}
+
+// respond runs after request/execute unwind and before Serve filters unwind.
+// The outer server also uses it when a Serve filter terminates the pipeline.
+func (p *sitePipeline) respond(ctx *Context) {
 	if ctx.handling != "" {
 		p.handleOutcome(ctx)
 	}
@@ -1147,6 +1158,7 @@ func corsOriginAllowed(origin string, patterns []string) bool {
 }
 
 func (p *sitePipeline) handleOutcome(ctx *Context) {
+	runRouterOutcome(ctx, ctx.Config)
 	kind := ctx.handling
 	ctx.handling = ""
 	hooks := p.outcomes[kind]

@@ -211,8 +211,9 @@ type ServeFilter struct {
 
 func (ServeFilter) Scope() string { return "web:filter" }
 
-// RequestFilter runs after the request has entered a site and before route
-// execution. Action may call Context.Next to continue the request pipeline.
+// RequestFilter runs after route matching and before parsing request values,
+// route authorization, argument mapping, and Loading. Route metadata is ready.
+// Action may call Context.Next to continue processing the request.
 type RequestFilter struct {
 	Name   string         `json:"name"`
 	Desc   string         `json:"desc"`
@@ -221,8 +222,9 @@ type RequestFilter struct {
 
 func (RequestFilter) Scope() string { return "web:filter" }
 
-// ExecuteFilter runs around route execution. Action may call Context.Next to
-// continue the request pipeline.
+// ExecuteFilter runs after route matching, authentication, argument mapping,
+// and Loading, around the route's Actions. Route metadata and Locals are ready.
+// Action may call Context.Next to continue to the next filter or route Action.
 type ExecuteFilter struct {
 	Name   string         `json:"name"`
 	Desc   string         `json:"desc"`

@@ -2,6 +2,7 @@ package dubi
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"sort"
@@ -615,13 +616,13 @@ func (b *basicModule) convert(typeName string, value any, definition base.Var) (
 		if len(typeName) > 3 {
 			bits, _ = strconv.Atoi(typeName[3:])
 		}
-		return strconv.ParseInt(fmt.Sprint(value), 10, bits)
+		return strconv.ParseInt(integerText(value), 10, bits)
 	case "uint", "uint8", "uint16", "uint32", "uint64":
 		bits := 64
 		if len(typeName) > 4 {
 			bits, _ = strconv.Atoi(typeName[4:])
 		}
-		return strconv.ParseUint(fmt.Sprint(value), 10, bits)
+		return strconv.ParseUint(integerText(value), 10, bits)
 	case "float", "float32", "float64":
 		bits := 64
 		if len(typeName) > 5 {
@@ -638,6 +639,22 @@ func (b *basicModule) convert(typeName string, value any, definition base.Var) (
 		return value, nil
 	}
 	return value, nil
+}
+
+// Format integral floats without exponent notation or rounding to a shorter
+// decimal value. ParseInt/ParseUint still validate fractions and integer bounds.
+func integerText(value any) string {
+	raw := reflect.ValueOf(value)
+	if raw.IsValid() && (raw.Kind() == reflect.Float32 || raw.Kind() == reflect.Float64) {
+		number := raw.Float()
+		if number == 0 {
+			return "0"
+		}
+		if math.Trunc(number) == number {
+			return strconv.FormatFloat(number, 'f', 0, 64)
+		}
+	}
+	return fmt.Sprint(value)
 }
 
 func mappingArrayElementType(typeName string) (string, bool) {

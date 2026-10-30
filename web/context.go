@@ -145,6 +145,39 @@ func (ctx *Context) Accepts(types ...string) bool {
 // policy. It is empty only when the underlying request has no peer address.
 func (ctx *Context) ClientIP() string { return ctx.RemoteIP }
 
+// IP follows infrago's header precedence: the last X-Forwarded-For address,
+// X-Real-IP, then the connection address. ClientIP applies the trusted proxy
+// policy instead of reading forwarding headers directly.
+func (ctx *Context) IP() string {
+	if ctx == nil || ctx.Request == nil {
+		return ""
+	}
+	for _, value := range []string{
+		ctx.Request.Header.Get("X-Forwarded-For"),
+		ctx.Request.Header.Get("X-Real-IP"),
+		ctx.Request.RemoteAddr,
+	} {
+		addresses := strings.Split(value, ",")
+		for index := len(addresses) - 1; index >= 0; index-- {
+			if address := strings.TrimSpace(addresses[index]); address != "" {
+				return requestPeerIP(address)
+			}
+		}
+	}
+	return ""
+}
+
+// Ip is an alias for IP.
+func (ctx *Context) Ip() string { return ctx.IP() }
+
+// Agent returns the request's User-Agent header.
+func (ctx *Context) Agent() string {
+	if ctx == nil || ctx.Request == nil {
+		return ""
+	}
+	return ctx.Request.UserAgent()
+}
+
 // Elapsed returns the time since this request Context was acquired.
 func (ctx *Context) Elapsed() time.Duration {
 	if ctx == nil || ctx.StartedAt.IsZero() {
