@@ -3,11 +3,14 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	stdhttp "net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +34,11 @@ type fileBody struct {
 	path string
 	name string
 	info os.FileInfo
+}
+type assetBody struct {
+	fsys fs.FS
+	path string
+	info fs.FileInfo
 }
 type binaryBody struct {
 	data []byte
@@ -148,6 +156,12 @@ func (ctx *Context) attachment(name string) {
 // mapping failure can therefore still be handled by the HTTP Error handler.
 func (ctx *Context) prepare() error {
 	switch body := ctx.Body.(type) {
+	case viewBody:
+		html, err := ctx.renderView(body)
+		if err != nil {
+			return err
+		}
+		ctx.Body = html
 	case jsonBody:
 		data, err := ctx.marshal(body.value)
 		if err != nil {
@@ -200,6 +214,15 @@ func (ctx *Context) prepare() error {
 		}
 		ctx.attachment(body.name)
 		ctx.Body = fileContent{file, filepath.Base(body.path), info.ModTime(), fileETag(info)}
+	case assetBody:
+		data, err := fs.ReadFile(body.fsys, body.path)
+		if err != nil {
+			return err
+		}
+		// Embedded files have no modification time. Hash their content so files
+		// of the same size still have different validators across builds.
+		etag := fmt.Sprintf("\"%x\"", sha256.Sum256(data))
+		ctx.Body = fileContent{bytes.NewReader(data), path.Base(body.path), body.info.ModTime(), etag}
 	case binaryBody:
 		ctx.attachment(body.name)
 	case streamBody:
@@ -215,7 +238,7 @@ func (ctx *Context) prepare() error {
 }
 
 type fileContent struct {
-	file     *os.File
+	file     io.ReadSeeker
 	name     string
 	modified time.Time
 	etag     string

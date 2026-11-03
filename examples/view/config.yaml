@@ -1,0 +1,6 @@
+web:
+  port: 18782
+  static: asset/statics
+
+view:
+  cache: true

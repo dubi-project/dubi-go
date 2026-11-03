@@ -24,6 +24,67 @@ Router 是 HTTP 入口逻辑。业务操作仍然通过 `ctx.Invoke` 或 `ctx.Ex
 
 ## 配置
 
+### 模板页面
+
+```go
+ctx.Data["user"] = user
+ctx.View("order/detail", Map{"order": order})
+```
+
+`ctx.View` 使用内置 [View 模块](../view/README.md)，默认读取 `asset/views`，
+支持布局、局部模板、多 Site、多语言、Helper 和 AssetFS。
+Response Filter 修改完数据后再渲染，渲染错误进入 Error Handler。
+参见 [`examples/view`](../examples/view) 中可直接运行的内嵌页面示例。
+
+### 静态文件与内嵌资源
+
+`static` 指定静态文件根目录，可在 Web、Server、Site 层级设置；Site 未设置时继承 Server。
+配置静态文件即可启动 Web，无需额外注册 Router。
+
+```yaml
+web:
+  port: 8080
+  static: public
+```
+
+默认读取磁盘文件。要把资源编进程序，在业务项目中添加 `assets.go`：
+
+```go
+package main
+
+import (
+    "embed"
+
+    dubi "github.com/dubi-project/dubi-go"
+)
+
+//go:embed public
+var assets embed.FS
+
+func init() {
+    dubi.AssetFS(assets)
+}
+```
+
+Web 根据 `static` 路径优先读取 AssetFS，未命中时回退到磁盘。`/` 对应根目录的
+`index.html`；已匹配的路由优先于静态文件。内嵌文件支持 MIME、HEAD、Range、ETag
+和条件请求，并沿用静态响应的 Filter、Handler 和 `settings.cache_control`。
+`ctx.File` 继续读取磁盘文件。
+
+`dubi.AssetFS` 是进程级资源，不受 Profile 影响。`AssetFile`、`AssetDir`、`AssetStat`
+也可供业务代码直接使用；参数使用相对资源路径和 `/` 分隔符。未设置文件系统时返回错误。
+使用 `fs.Sub(assets, "public")` 去掉目录前缀时，应同时把 `static` 配为 `"."`。
+
+完整示例位于 [`examples/assets`](../examples/assets)。从该目录执行 `go run .`，
+访问 `http://localhost:18781/`。也可编译后通过命令行参数指定静态路径，无需携带配置文件：
+
+```sh
+go build -o /tmp/dubi-assets ./examples/assets
+/tmp/dubi-assets --config.web.port=18781 --config.web.static=public
+```
+
+### 监听与域名
+
 最简单的配置只有一个 HTTP Server：
 
 ```yaml

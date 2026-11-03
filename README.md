@@ -33,6 +33,16 @@ available when a test or embedded host needs individual lifecycle phases.
 
 The Web entry module is documented in [`web`](web/README.md).
 
+The built-in [`View module`](view/README.md) renders HTML templates, layouts,
+and partials with `ctx.View`. It also exposes `view.Parse` for rendering outside
+HTTP, with process-wide Helper registration and request-isolated template caching.
+
+Process-wide resources use `dubi.AssetFS(fsys)`, accepting `embed.FS`,
+`os.DirFS`, or any `fs.FS`. `AssetFS()` gets the current filesystem;
+`AssetFile`, `AssetDir`, and `AssetStat` read its files and metadata.
+Resources do not participate in Registry or Profile selection. See the
+[embedded static-file example](examples/assets) and [Web documentation](web/README.md).
+
 The Data module is included as a single package. Import it for its process
 module registration, then select one of the built-in database types in the
 configuration; there is no application-level type registry:

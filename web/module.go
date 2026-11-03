@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"mime/multipart"
 	"net"
 	stdhttp "net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -797,6 +799,16 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 	if clean == "/" {
 		clean = "/index.html"
 	}
+	if fsys := dubi.AssetFS(); fsys != nil {
+		name := path.Join(filepath.ToSlash(p.staticRoot), strings.TrimPrefix(filepath.ToSlash(clean), "/"))
+		if fs.ValidPath(name) {
+			if info, err := fs.Stat(fsys, name); err == nil && info.Mode().IsRegular() {
+				p.staticCacheControl(ctx)
+				ctx.Body = assetBody{fsys: fsys, path: name, info: info}
+				return true
+			}
+		}
+	}
 	fileAbs := filepath.Join(root, clean)
 	if root != string(filepath.Separator) && fileAbs != root && !strings.HasPrefix(fileAbs, p.staticPrefix) {
 		return false
@@ -805,11 +817,15 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
+	p.staticCacheControl(ctx)
+	ctx.fileWithInfo(fileAbs, info)
+	return true
+}
+
+func (p *sitePipeline) staticCacheControl(ctx *Context) {
 	if cache, ok := p.settings["cache_control"].(string); ok && strings.TrimSpace(cache) != "" {
 		ctx.CacheControl(cache)
 	}
-	ctx.fileWithInfo(fileAbs, info)
-	return true
 }
 
 func requestFormValues(request *stdhttp.Request) (Map, map[string][]*multipart.FileHeader, error) {

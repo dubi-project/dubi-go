@@ -1,0 +1,3 @@
+web:
+  port: 18781
+  static: public

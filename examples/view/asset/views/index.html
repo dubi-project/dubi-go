@@ -1,0 +1,6 @@
+{% layout "layout" %}
+{% title .model.title %}
+{% style "/app.css" %}
+<h1>{% upper .model.name %}</h1>
+{% render "shared/greeting" .model %}
+<a href="{% uri "index" %}?name=Dubi">Try another name</a>
