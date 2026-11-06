@@ -303,3 +303,19 @@ ctx.ETag("user-1-v2")
 ```
 
 文件响应自动生成 ETag 并支持 `If-None-Match`。文本和 JSON 响应在配置开启压缩且请求声明支持 gzip 时自动压缩。Filter 的 `Response` 阶段可作为访问日志和指标的统一出口；可以通过 `ctx.Id()`、`ctx.StatusCode()` 和 `ctx.Elapsed()` 记录请求标识、响应状态和耗时。`ctx.Id()` 是当前请求的唯一 ID，并通过 `X-Request-ID` 返回给客户端。
+
+## 原生 HTTP 与服务调用
+
+原生 HTTP 对象放在 `ctx.HTTP` 中：
+
+```go
+value := ctx.HTTP.Request.URL.Query().Get("id")
+ctx.HTTP.Response.Header().Set("X-App", "example")
+user := ctx.Request("user.get", Map{"id": value})
+ctx.Answer(ctx.Result(), user)
+```
+
+`ctx.HTTP.Response` 的类型是 `http.ResponseWriter`。原来的顶级
+`ctx.Request`、`ctx.Writer` 字段已移除。`ctx.Request(...)` 通过 BUS 调用 Service；
+`ctx.Broadcast`、`ctx.Dispatch`、`ctx.Enqueue` 也由 Meta 提供。
+原生 HTTP 对象只在当前请求期间有效，不应传给后台任务。

@@ -22,6 +22,7 @@ type Meta struct {
 	verified  bool
 	tokenData Token
 	result    Res
+	attempt   int
 }
 
 // NewMeta creates a request metadata object with a background context and a
@@ -50,6 +51,7 @@ func (m *Meta) Reset(ctx context.Context) *Meta {
 	m.verified = false
 	m.tokenData = Token{}
 	m.result = nil
+	m.attempt = 0
 	return m
 }
 

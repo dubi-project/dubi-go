@@ -521,8 +521,8 @@ func (s *serverState) register(routers map[string]Router, filters map[string]Fil
 					registered := &routeHandler{actions: actions}
 					registered.bind = func(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.Request) {
 						request.Pattern = registeredPattern
-						ctx.Request = request
-						ctx.Writer = writer
+						ctx.HTTP.Request = request
+						ctx.HTTP.Response = writer
 						ctx.Name = route
 						ctx.Config = handler
 						ctx.Settings = assignMap(ctx.Settings, routeSettings)
@@ -745,19 +745,19 @@ func (s *serverState) compilePipelines(registeredRoutes map[string][]*routeHandl
 		}
 		p.requestChain = append(p.requestChain, func(ctx *Context) {
 			if selected, ok := ctx.routeHandler.(*routeHandler); ok {
-				selected.serve(ctx, ctx.Writer, ctx.Request)
+				selected.serve(ctx, ctx.HTTP.Response, ctx.HTTP.Request)
 			}
 		})
 		p.response = append(p.response, func(ctx *Context) { p.finish(ctx) })
 		p.chain = append(p.chain, func(ctx *Context) {
-			if s.applyCORS(ctx.Writer, ctx.Request, site) {
+			if s.applyCORS(ctx.HTTP.Response, ctx.HTTP.Request, site) {
 				p.respond(ctx)
 				return
 			}
 			ctx.routeHandler = nil
-			matched, pattern := p.mux.Handler(ctx.Request)
+			matched, pattern := p.mux.Handler(ctx.HTTP.Request)
 			ctx.routePattern = pattern
-			if pattern == "" && !p.hasPathRoute(ctx.Request) {
+			if pattern == "" && !p.hasPathRoute(ctx.HTTP.Request) {
 				if !p.serveStatic(ctx) {
 					ctx.NotFound()
 				}
@@ -769,11 +769,11 @@ func (s *serverState) compilePipelines(registeredRoutes map[string][]*routeHandl
 			// its Allow header; invoking it directly avoids a second tree lookup.
 			ctx.routeHandler = matched
 			if selected, ok := matched.(*routeHandler); ok {
-				selected.bind(ctx, ctx.Writer, ctx.Request)
+				selected.bind(ctx, ctx.HTTP.Response, ctx.HTTP.Request)
 				runChain(ctx, p.requestChain)
 			} else {
-				ctx.Request.Pattern = pattern
-				matched.ServeHTTP(ctx.Writer, ctx.Request)
+				ctx.HTTP.Request.Pattern = pattern
+				matched.ServeHTTP(ctx.HTTP.Response, ctx.HTTP.Request)
 			}
 			p.respond(ctx)
 		})
@@ -795,7 +795,7 @@ func (p *sitePipeline) serveStatic(ctx *Context) bool {
 	if root == "" {
 		return false
 	}
-	clean := filepath.Clean("/" + ctx.Request.URL.Path)
+	clean := filepath.Clean("/" + ctx.HTTP.Request.URL.Path)
 	if clean == "/" {
 		clean = "/index.html"
 	}
@@ -1033,15 +1033,15 @@ func (s *serverState) serveHTTP(writer stdhttp.ResponseWriter, request *stdhttp.
 	ctx.RemoteIP = s.resolveClientIP(request)
 	ctx.Settings = assignMap(ctx.Settings, p.settings)
 	ctx.routes = s.routes
-	ctx.Request = request
+	ctx.HTTP.Request = request
 	if noPipeline {
 		if selected, ok := matchedHandler.(*routeHandler); ok {
-			selected.ServeContext(ctx, ctx.Writer, request)
+			selected.ServeContext(ctx, ctx.HTTP.Response, request)
 		} else if matchedHandler != nil {
 			request.Pattern = matchedPattern
-			matchedHandler.ServeHTTP(ctx.Writer, request)
+			matchedHandler.ServeHTTP(ctx.HTTP.Response, request)
 		} else {
-			p.mux.ServeHTTP(ctx.Writer, request)
+			p.mux.ServeHTTP(ctx.HTTP.Response, request)
 		}
 	} else {
 		runChain(ctx, p.chain)
@@ -1237,17 +1237,17 @@ func authorizeRouter(ctx *Context, router Router) bool {
 }
 
 func requestToken(ctx *Context) string {
-	if ctx == nil || ctx.Request == nil {
+	if ctx == nil || ctx.HTTP.Request == nil {
 		return ""
 	}
-	if value := strings.TrimSpace(ctx.Request.Header.Get("Authorization")); value != "" {
+	if value := strings.TrimSpace(ctx.HTTP.Request.Header.Get("Authorization")); value != "" {
 		parts := strings.Fields(value)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
 			return parts[1]
 		}
 		return value
 	}
-	if cookie, err := ctx.Request.Cookie(dubi.AuthCookieName()); err == nil {
+	if cookie, err := ctx.HTTP.Request.Cookie(dubi.AuthCookieName()); err == nil {
 		return strings.TrimSpace(cookie.Value)
 	}
 	return ""

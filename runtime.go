@@ -92,6 +92,10 @@ func resetRuntime(rt *Runtime) {
 	// shutdown only closes modules. Clear the process wait state as well so a
 	// reset after Start cannot leave Wait observing the old runtime handle.
 	runtimeManager.remove(rt)
+	bus.stop()
+	bus.mu.Lock()
+	bus.hook, bus.memory = nil, nil
+	bus.mu.Unlock()
 	unfreezeModules()
 	for _, mounted := range globalModules() {
 		if resettable, ok := mounted.(interface{ Reset() }); ok {
@@ -352,6 +356,7 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 	setupOK := false
 	defer func() {
 		if !setupOK {
+			bus.stop()
 			triggers.shutdown()
 			globalRegistry.unfreeze()
 			unfreezeModules()
@@ -420,6 +425,9 @@ func (rt *Runtime) Setup(ctx context.Context) error {
 		for _, registration := range selected {
 			module.Register(registration.Name, registration.Value)
 		}
+	}
+	if err := bus.prepare(rt, modules); err != nil {
+		return err
 	}
 	for _, module := range modules {
 		moduleContext := rt.lifecycleContext(ctx)
@@ -514,6 +522,7 @@ func (rt *Runtime) start(ctx context.Context) error {
 		}
 		started++
 	}
+	bus.start()
 	// Register the running process before releasing the lifecycle transition.
 	// A concurrent End must either wait for this transition to finish or see
 	// the active process; it must never observe a started runtime that is absent
@@ -532,6 +541,7 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	triggers.drain()
 	SyncToggle(STOP)
 	triggers.drain()
+	bus.stop()
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {
@@ -552,6 +562,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		return err
 	}
 	triggers.shutdown()
+	bus.stop()
 	modules := globalModules()
 	var first error
 	for i := len(modules) - 1; i >= 0; i-- {

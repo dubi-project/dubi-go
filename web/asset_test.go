@@ -36,7 +36,7 @@ func TestEmbeddedStaticFiles(t *testing.T) {
 			var filters map[string]Filter
 			if pipeline {
 				filters = map[string]Filter{"response": {Response: func(ctx *Context) {
-					ctx.Writer.Header().Set("X-Filtered", "yes")
+					ctx.HTTP.Response.Header().Set("X-Filtered", "yes")
 					ctx.Next()
 				}}}
 			}

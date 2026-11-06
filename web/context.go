@@ -32,13 +32,19 @@ var contextPool = sync.Pool{
 	New: func() any { return &Context{} },
 }
 
+// HTTP exposes the native HTTP request and response writer without shadowing
+// Meta.Request, the BUS service call.
+type HTTP struct {
+	Request  *stdhttp.Request
+	Response stdhttp.ResponseWriter
+}
+
 // Context is the HTTP request context. Router actions write responses through
 // this object and may explicitly invoke Dubi business operations when useful.
 type Context struct {
 	*dubi.Meta
 	metaValue dubi.Meta
-	Request   *stdhttp.Request
-	Writer    stdhttp.ResponseWriter
+	HTTP      HTTP
 	StartedAt time.Time
 	Name      string
 
@@ -80,27 +86,27 @@ type Context struct {
 
 func (ctx *Context) Header(name string, values ...string) string {
 	if len(values) > 0 {
-		ctx.Writer.Header().Set(name, values[0])
+		ctx.HTTP.Response.Header().Set(name, values[0])
 		return values[0]
 	}
-	return ctx.Request.Header.Get(name)
+	return ctx.HTTP.Request.Header.Get(name)
 }
 
 func (ctx *Context) setResponseHeader(name, value string) {
-	if ctx == nil || ctx.Writer == nil {
+	if ctx == nil || ctx.HTTP.Response == nil {
 		return
 	}
-	ctx.Writer.Header()[name] = []string{value}
+	ctx.HTTP.Response.Header()[name] = []string{value}
 }
 
 // ContentType returns the media type without parameters.
 func (ctx *Context) ContentType() string {
-	if ctx == nil || ctx.Request == nil {
+	if ctx == nil || ctx.HTTP.Request == nil {
 		return ""
 	}
-	value, _, err := mime.ParseMediaType(ctx.Request.Header.Get("Content-Type"))
+	value, _, err := mime.ParseMediaType(ctx.HTTP.Request.Header.Get("Content-Type"))
 	if err != nil {
-		return strings.TrimSpace(strings.SplitN(ctx.Request.Header.Get("Content-Type"), ";", 2)[0])
+		return strings.TrimSpace(strings.SplitN(ctx.HTTP.Request.Header.Get("Content-Type"), ";", 2)[0])
 	}
 	return value
 }
@@ -108,13 +114,13 @@ func (ctx *Context) ContentType() string {
 // Accepts reports whether the request accepts one of the supplied media types.
 // A wildcard in either side is treated as a match.
 func (ctx *Context) Accepts(types ...string) bool {
-	if ctx == nil || ctx.Request == nil {
+	if ctx == nil || ctx.HTTP.Request == nil {
 		return false
 	}
-	if strings.TrimSpace(ctx.Request.Header.Get("Accept")) == "" {
+	if strings.TrimSpace(ctx.HTTP.Request.Header.Get("Accept")) == "" {
 		return true
 	}
-	accepted := strings.Split(ctx.Request.Header.Get("Accept"), ",")
+	accepted := strings.Split(ctx.HTTP.Request.Header.Get("Accept"), ",")
 	if len(types) == 0 {
 		return true
 	}
@@ -149,13 +155,13 @@ func (ctx *Context) ClientIP() string { return ctx.RemoteIP }
 // X-Real-IP, then the connection address. ClientIP applies the trusted proxy
 // policy instead of reading forwarding headers directly.
 func (ctx *Context) IP() string {
-	if ctx == nil || ctx.Request == nil {
+	if ctx == nil || ctx.HTTP.Request == nil {
 		return ""
 	}
 	for _, value := range []string{
-		ctx.Request.Header.Get("X-Forwarded-For"),
-		ctx.Request.Header.Get("X-Real-IP"),
-		ctx.Request.RemoteAddr,
+		ctx.HTTP.Request.Header.Get("X-Forwarded-For"),
+		ctx.HTTP.Request.Header.Get("X-Real-IP"),
+		ctx.HTTP.Request.RemoteAddr,
 	} {
 		addresses := strings.Split(value, ",")
 		for index := len(addresses) - 1; index >= 0; index-- {
@@ -172,10 +178,10 @@ func (ctx *Context) Ip() string { return ctx.IP() }
 
 // Agent returns the request's User-Agent header.
 func (ctx *Context) Agent() string {
-	if ctx == nil || ctx.Request == nil {
+	if ctx == nil || ctx.HTTP.Request == nil {
 		return ""
 	}
-	return ctx.Request.UserAgent()
+	return ctx.HTTP.Request.UserAgent()
 }
 
 // Elapsed returns the time since this request Context was acquired.
@@ -222,7 +228,7 @@ func (ctx *Context) Cookie(name string, values ...any) string {
 		ctx.SetCookieValue(name, value)
 		return value
 	}
-	cookie, err := ctx.Request.Cookie(name)
+	cookie, err := ctx.HTTP.Request.Cookie(name)
 	if err != nil {
 		return ""
 	}
@@ -231,13 +237,13 @@ func (ctx *Context) Cookie(name string, values ...any) string {
 
 // CookieObject returns the complete request cookie.
 func (ctx *Context) CookieObject(name string) (*stdhttp.Cookie, error) {
-	return ctx.Request.Cookie(name)
+	return ctx.HTTP.Request.Cookie(name)
 }
 
 // SetCookie adds a response cookie.
 func (ctx *Context) SetCookie(cookie *stdhttp.Cookie) {
 	if cookie != nil {
-		stdhttp.SetCookie(ctx.Writer, cookie)
+		stdhttp.SetCookie(ctx.HTTP.Response, cookie)
 	}
 }
 
@@ -272,7 +278,7 @@ func (ctx *Context) Auth(payload ...Map) string {
 		ctx.Error(dubi.ErrorResult(err))
 		return ""
 	}
-	if ctx.Request != nil && ctx.Writer != nil {
+	if ctx.HTTP.Request != nil && ctx.HTTP.Response != nil {
 		cookie := &stdhttp.Cookie{
 			Name:     dubi.AuthCookieName(),
 			Value:    token,
@@ -280,7 +286,7 @@ func (ctx *Context) Auth(payload ...Map) string {
 			HttpOnly: true,
 			SameSite: stdhttp.SameSiteLaxMode,
 			MaxAge:   int(dubi.AuthTTL() / time.Second),
-			Secure:   ctx.Request.TLS != nil,
+			Secure:   ctx.HTTP.Request.TLS != nil,
 		}
 		ctx.SetCookie(cookie)
 	}
@@ -452,8 +458,8 @@ func initContext(ctx *Context, writer stdhttp.ResponseWriter, request *stdhttp.R
 	output.code = 0
 	output.Header()["X-Request-ID"] = []string{meta.Id()}
 	ctx.Meta = meta
-	ctx.Request = request
-	ctx.Writer = output
+	ctx.HTTP.Request = request
+	ctx.HTTP.Response = output
 	ctx.StartedAt = time.Now()
 	ctx.output = output
 	ctx.Method = request.Method
@@ -530,8 +536,8 @@ func releaseContext(ctx *Context) {
 		ctx.Meta.Result(nil)
 	}
 	ctx.Meta = nil
-	ctx.Request = nil
-	ctx.Writer = nil
+	ctx.HTTP.Request = nil
+	ctx.HTTP.Response = nil
 	ctx.StartedAt = time.Time{}
 	ctx.output = nil
 	ctx.Config = Router{}

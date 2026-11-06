@@ -23,7 +23,7 @@ func TestContextIP(t *testing.T) {
 			request.RemoteAddr = test.peer
 			request.Header.Set("X-Forwarded-For", test.forwarded)
 			request.Header.Set("X-Real-IP", test.real)
-			ctx := &Context{Request: request, RemoteIP: "trusted-policy-result"}
+			ctx := &Context{HTTP: HTTP{Request: request}, RemoteIP: "trusted-policy-result"}
 			if got := ctx.IP(); got != test.want {
 				t.Fatalf("IP = %q, want %q", got, test.want)
 			}
@@ -40,7 +40,7 @@ func TestContextIP(t *testing.T) {
 func TestContextAgent(t *testing.T) {
 	request := httptest.NewRequest("GET", "http://example.test/", nil)
 	request.Header.Set("User-Agent", "ByOne/1.0 (test agent)")
-	ctx := &Context{Request: request}
+	ctx := &Context{HTTP: HTTP{Request: request}}
 	if got := ctx.Agent(); got != "ByOne/1.0 (test agent)" {
 		t.Fatalf("Agent = %q", got)
 	}

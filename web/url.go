@@ -104,7 +104,7 @@ func (r *routeRegistry) siteURL(ctx *Context, site, path string, options ...Map)
 
 func (r *routeRegistry) siteURLForInfo(ctx *Context, info routeInfo, path string, options Map) string {
 	scheme := "http"
-	if ctx.Request != nil && ctx.Request.TLS != nil {
+	if ctx.HTTP.Request != nil && ctx.HTTP.Request.TLS != nil {
 		scheme = "https"
 	}
 	if value, ok := options["[ssl]"].(bool); ok && value {

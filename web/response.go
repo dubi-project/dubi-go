@@ -148,7 +148,7 @@ func (ctx *Context) marshal(value any) ([]byte, error) {
 
 func (ctx *Context) attachment(name string) {
 	if name != "" {
-		ctx.Writer.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+		ctx.HTTP.Response.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	}
 }
 
@@ -228,10 +228,10 @@ func (ctx *Context) prepare() error {
 	case streamBody:
 		ctx.attachment(body.name)
 		if body.size >= 0 {
-			ctx.Writer.Header().Set("Content-Length", strconv.FormatInt(body.size, 10))
+			ctx.HTTP.Response.Header().Set("Content-Length", strconv.FormatInt(body.size, 10))
 		}
-		if ctx.Writer.Header().Get("Content-Type") == "" {
-			ctx.Writer.Header().Set("Content-Type", "application/octet-stream")
+		if ctx.HTTP.Response.Header().Get("Content-Type") == "" {
+			ctx.HTTP.Response.Header().Set("Content-Type", "application/octet-stream")
 		}
 	}
 	return nil
@@ -270,36 +270,36 @@ func (ctx *Context) write() {
 			ctx.Code = stdhttp.StatusNoContent
 		}
 	}
-	if etag := ctx.Writer.Header().Get("ETag"); etag != "" && etagMatches(ctx.Request.Header.Get("If-None-Match"), etag) {
-		ctx.Writer.WriteHeader(stdhttp.StatusNotModified)
+	if etag := ctx.HTTP.Response.Header().Get("ETag"); etag != "" && etagMatches(ctx.HTTP.Request.Header.Get("If-None-Match"), etag) {
+		ctx.HTTP.Response.WriteHeader(stdhttp.StatusNotModified)
 		ctx.Code = ctx.output.code
 		return
 	}
 	switch body := ctx.Body.(type) {
 	case redirectBody:
-		stdhttp.Redirect(ctx.Writer, ctx.Request, body.url, ctx.Code)
+		stdhttp.Redirect(ctx.HTTP.Response, ctx.HTTP.Request, body.url, ctx.Code)
 	case fileContent:
-		ctx.Writer.Header().Set("ETag", body.etag)
-		if etagMatches(ctx.Request.Header.Get("If-None-Match"), body.etag) {
-			ctx.Writer.WriteHeader(stdhttp.StatusNotModified)
+		ctx.HTTP.Response.Header().Set("ETag", body.etag)
+		if etagMatches(ctx.HTTP.Request.Header.Get("If-None-Match"), body.etag) {
+			ctx.HTTP.Response.WriteHeader(stdhttp.StatusNotModified)
 			ctx.Code = ctx.output.code
 			return
 		}
-		stdhttp.ServeContent(ctx.Writer, ctx.Request, body.name, body.modified, body.file)
+		stdhttp.ServeContent(ctx.HTTP.Response, ctx.HTTP.Request, body.name, body.modified, body.file)
 	case binaryBody:
-		stdhttp.ServeContent(ctx.Writer, ctx.Request, body.name, time.Time{}, bytes.NewReader(body.data))
+		stdhttp.ServeContent(ctx.HTTP.Response, ctx.HTTP.Request, body.name, time.Time{}, bytes.NewReader(body.data))
 	case streamBody:
-		ctx.Writer.WriteHeader(ctx.Code)
-		if ctx.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) {
-			_, _ = io.Copy(ctx.Writer, body.reader)
+		ctx.HTTP.Response.WriteHeader(ctx.Code)
+		if ctx.HTTP.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) {
+			_, _ = io.Copy(ctx.HTTP.Response, body.reader)
 		}
 	default:
-		compress := ctx.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) && ctx.Body != nil && ctx.shouldCompress()
+		compress := ctx.HTTP.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) && ctx.Body != nil && ctx.shouldCompress()
 		if compress {
 			ctx.enableCompression()
 		}
-		ctx.Writer.WriteHeader(ctx.Code)
-		if ctx.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) && ctx.Body != nil {
+		ctx.HTTP.Response.WriteHeader(ctx.Code)
+		if ctx.HTTP.Request.Method != stdhttp.MethodHead && bodyAllowed(ctx.Code) && ctx.Body != nil {
 			ctx.writeValue(body, compress)
 		}
 	}
@@ -314,36 +314,36 @@ func (ctx *Context) writeValue(body any, compress bool) {
 	case string:
 		data = []byte(value)
 	default:
-		_, _ = fmt.Fprint(ctx.Writer, body)
+		_, _ = fmt.Fprint(ctx.HTTP.Response, body)
 		return
 	}
 	if compress {
 		writer := gzipWriterPool.Get().(*gzip.Writer)
-		writer.Reset(ctx.Writer)
+		writer.Reset(ctx.HTTP.Response)
 		_, _ = writer.Write(data)
 		_ = writer.Close()
 		writer.Reset(io.Discard)
 		gzipWriterPool.Put(writer)
 		return
 	}
-	_, _ = ctx.Writer.Write(data)
+	_, _ = ctx.HTTP.Response.Write(data)
 }
 
 func (ctx *Context) enableCompression() {
-	ctx.Writer.Header().Set("Content-Encoding", "gzip")
-	ctx.Writer.Header().Add("Vary", "Accept-Encoding")
-	ctx.Writer.Header().Del("Content-Length")
+	ctx.HTTP.Response.Header().Set("Content-Encoding", "gzip")
+	ctx.HTTP.Response.Header().Add("Vary", "Accept-Encoding")
+	ctx.HTTP.Response.Header().Del("Content-Length")
 }
 
 func (ctx *Context) shouldCompress() bool {
-	if ctx == nil || ctx.Request == nil || ctx.Request.Method == stdhttp.MethodHead || ctx.Settings == nil {
+	if ctx == nil || ctx.HTTP.Request == nil || ctx.HTTP.Request.Method == stdhttp.MethodHead || ctx.Settings == nil {
 		return false
 	}
-	if !boolValue(ctx.Settings["compress"]) || ctx.Writer.Header().Get("Content-Encoding") != "" {
+	if !boolValue(ctx.Settings["compress"]) || ctx.HTTP.Response.Header().Get("Content-Encoding") != "" {
 		return false
 	}
 	gzipQuality, wildcardQuality := -1.0, -1.0
-	for _, item := range strings.Split(strings.ToLower(ctx.Request.Header.Get("Accept-Encoding")), ",") {
+	for _, item := range strings.Split(strings.ToLower(ctx.HTTP.Request.Header.Get("Accept-Encoding")), ",") {
 		parts := strings.Split(strings.TrimSpace(item), ";")
 		if len(parts) == 0 {
 			continue
@@ -368,7 +368,7 @@ func (ctx *Context) shouldCompress() bool {
 	if gzipQuality <= 0 {
 		return false
 	}
-	contentType := strings.ToLower(ctx.Writer.Header().Get("Content-Type"))
+	contentType := strings.ToLower(ctx.HTTP.Response.Header().Get("Content-Type"))
 	return strings.HasPrefix(contentType, "text/") || strings.Contains(contentType, "json") || strings.Contains(contentType, "javascript") || strings.Contains(contentType, "xml")
 }
 
@@ -388,7 +388,7 @@ func etagMatches(header, etag string) bool {
 
 // CacheControl sets the response cache policy.
 func (ctx *Context) CacheControl(value string) {
-	ctx.Writer.Header().Set("Cache-Control", value)
+	ctx.HTTP.Response.Header().Set("Cache-Control", value)
 }
 
 // ETag sets an explicit response entity tag.
@@ -399,7 +399,7 @@ func (ctx *Context) ETag(value string) {
 	if !strings.HasPrefix(value, "\"") {
 		value = fmt.Sprintf("\"%s\"", value)
 	}
-	ctx.Writer.Header().Set("ETag", value)
+	ctx.HTTP.Response.Header().Set("ETag", value)
 }
 
 func bodyAllowed(code int) bool {

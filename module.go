@@ -28,6 +28,13 @@ func Mount(module Module) Host {
 			return moduleHost{}
 		}
 	}
+	if _, ok := module.(BusHook); ok {
+		for _, existing := range mounted.items {
+			if _, taken := existing.(BusHook); taken {
+				panic("dubi: BUS hook is already mounted")
+			}
+		}
+	}
 	mounted.items = append(mounted.items, module)
 	return moduleHost{}
 }

@@ -1,6 +1,7 @@
 package dubi
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,8 +17,10 @@ func TestConfigFileIdentityAndRunProfileOverride(t *testing.T) {
 	}
 	t.Setenv("DUBI_CONFIG", path)
 	rt := testRuntime(WithTenant("override-tenant"), WithRole("override-role"), WithNode("override-node"), WithProfile("option-profile"), WithEndpoint("override:7000"))
-	if err := rt.Run(""); err != nil {
-		t.Fatal(err)
+	// Identity/configuration are loaded before BUS selection. Until the server
+	// transport exists, configured endpoints explicitly reject local fallback.
+	if err := rt.Run(""); !errors.Is(err, ErrBusServerUnavailable) {
+		t.Fatalf("server BUS selection = %v", err)
 	}
 	defer rt.End()
 	if got, want := rt.Identity(), (Identity{Tenant: "override-tenant", Role: "override-role", Profile: "", Node: "override-node"}); got != want {

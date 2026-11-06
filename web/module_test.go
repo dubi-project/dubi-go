@@ -19,8 +19,8 @@ func TestPipelineDispatchPreservesRouteRequestValues(t *testing.T) {
 				Action: func(ctx *Context) {
 					ctx.JSON(Map{
 						"id":      ctx.Params["id"],
-						"path_id": ctx.Request.PathValue("id"),
-						"pattern": ctx.Request.Pattern,
+						"path_id": ctx.HTTP.Request.PathValue("id"),
+						"pattern": ctx.HTTP.Request.Pattern,
 					})
 				},
 			},
@@ -97,7 +97,7 @@ func TestPipelineDispatchPreservesMultiSegmentPathValue(t *testing.T) {
 			Action: func(ctx *Context) {
 				ctx.JSON(Map{
 					"param": ctx.Params["path"],
-					"value": ctx.Request.PathValue("path"),
+					"value": ctx.HTTP.Request.PathValue("path"),
 				})
 			},
 		},

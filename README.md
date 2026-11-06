@@ -9,6 +9,33 @@ dubi.Register("user.get", dubi.Service{})
 dubi.Register("worker", dubi.Profile{})
 ```
 
+Services can declare a shared BUS subscription name independently of their
+registration names:
+
+```go
+dubi.Register("mail.welcome", dubi.Service{
+	Subject: "user.created",
+	Group:   "mail",
+	Action:  sendWelcome,
+})
+dubi.Register("account.initialize", dubi.Service{
+	Subject: "user.created",
+	Group:   "account",
+	Action:  initializeAccount,
+})
+```
+
+An empty `Subject` defaults to the registration name when the service is loaded.
+Registry replacement, Profile matching, and local `Invoke` still use registration
+names, so these two handlers coexist and can be selected independently. Registering
+the same service name again replaces it. `Invoke` falls back to BUS Request if no
+local Method or Service has the requested registration name.
+
+The built-in memory BUS provides `Request`, `Broadcast`, `Dispatch`, and `Enqueue`
+on both `dubi` and `Meta`. A mounted module implementing `BusHook` takes over all
+four calls. See the [BUS documentation](docs/bus.md) and [runnable example](examples/bus).
+The memory queue retries while the process is alive; it is not persistent.
+
 Shared dynamic values live in [`base`](base): `base.Any`, `base.Map`,
 `base.List`, and `base.Res`.
 

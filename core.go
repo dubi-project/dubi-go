@@ -2,6 +2,7 @@ package dubi
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/dubi-project/dubi-go/base"
 )
@@ -21,11 +22,18 @@ type Method struct {
 
 func (Method) Scope() string { return "core:method" }
 
-// Service is a business operation with a transport boundary. Until a Bus is
-// mounted, a Service uses the same local invocation path as a Method.
+// Service is a business operation callable locally by registration name or
+// through BUS by Subject. The default BUS is process-local and in-memory.
 type Service struct {
-	Name     string
-	Desc     string
+	Name string
+	Desc string
+	// Subject is the BUS subscription name. Empty uses the registration name.
+	// Multiple services may share a subject without sharing a registration key.
+	Subject string
+	// Group controls Dispatch. Empty falls back to Role, Tenant, then "dubi".
+	Group string
+	// Retry contains the delays before each additional Enqueue attempt.
+	Retry    []time.Duration
 	Nullable bool
 	Args     Vars
 	Data     Vars
@@ -64,10 +72,10 @@ func (c *coreModule) Register(name string, value any) {
 			c.methods[name] = *item
 		}
 	case Service:
-		c.services[name] = item
+		c.registerService(name, item)
 	case *Service:
 		if item != nil {
-			c.services[name] = *item
+			c.registerService(name, *item)
 		}
 	case Library:
 		c.registerLibrary(name, item)
@@ -82,6 +90,18 @@ func (c *coreModule) Register(name string, value any) {
 			c.registerTrigger(name, *item)
 		}
 	}
+}
+
+func (c *coreModule) registerService(name string, service Service) {
+	if service.Subject == "" {
+		service.Subject = name
+	}
+	service.Group = serviceGroup(service.Group, DefaultRuntime().Identity())
+	service.Retry = append([]time.Duration(nil), service.Retry...)
+	service.Settings = cloneConfigMap(service.Settings)
+	service.Args = cloneTriggerVars(service.Args, false)
+	service.Data = cloneTriggerVars(service.Data, false)
+	c.services[name] = service
 }
 
 func (c *coreModule) Reset() {
@@ -99,9 +119,9 @@ func (c *coreModule) Reset() {
 
 func (c *coreModule) Config(Map) error {
 	triggers.shutdown()
-	for _, name := range c.triggerMethods {
-		delete(c.methods, name)
-	}
+	c.methods = make(map[string]Method)
+	c.services = make(map[string]Service)
+	c.libraries = make(map[string]Library)
 	c.triggerMethods = nil
 	c.triggers = make(map[string][]Trigger)
 	return nil
@@ -112,8 +132,13 @@ func (*coreModule) Start(*Context) error   { return nil }
 func (*coreModule) Stop(*Context) error    { return nil }
 func (*coreModule) Close(*Context) error   { return nil }
 
-// Invoke calls a local Method or Service on the Runtime.
+// Invoke calls a local Method or Service, falling back to BUS Request if absent.
 func (rt *Runtime) Invoke(meta *Meta, name string, value Map) (Map, Res) {
+	if _, ok := core.methods[name]; !ok {
+		if _, ok := core.services[name]; !ok {
+			return requestBus(meta, name, value)
+		}
+	}
 	return rt.invoke(meta, name, value, false)
 }
 
@@ -145,7 +170,7 @@ func invokeRuntime(meta *Meta, name string, value Map, methodOnly bool) (Map, Re
 	if methodOnly {
 		return rt.invoke(meta, name, value, true)
 	}
-	return rt.invoke(meta, name, value, false)
+	return rt.Invoke(meta, name, value)
 }
 
 func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool, overrides ...Map) (Map, Res) {
@@ -185,6 +210,25 @@ func (rt *Runtime) invoke(meta *Meta, name string, value Map, methodOnly bool, o
 	} else {
 		return nil, ResultOf(1, "method not found: "+name)
 	}
+	return rt.invokeDefinition(meta, name, value, action, settings, dataDefinition, config, overrides...)
+}
+
+// invokeLocalService bypasses Method lookup and BUS routing, including when a
+// Method and Service share the same registration name.
+func (rt *Runtime) invokeLocalService(meta *Meta, name string, value Map) (Map, Res, bool) {
+	service, ok := core.services[name]
+	if !ok {
+		return nil, ErrorResult(fmt.Errorf("%w: %s", ErrBusNoService, name)), false
+	}
+	if meta == nil {
+		meta = NewMeta()
+	}
+	action := Method{Action: service.Action, Args: service.Args}
+	data, result := rt.invokeDefinition(meta, name, value, action, service.Settings, service.Data, service)
+	return data, result, true
+}
+
+func (rt *Runtime) invokeDefinition(meta *Meta, name string, value Map, action Method, settings Map, dataDefinition Vars, config any, overrides ...Map) (Map, Res) {
 	settings = cloneConfigMap(settings)
 	for _, overlay := range overrides {
 		if overlay == nil {
