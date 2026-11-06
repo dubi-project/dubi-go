@@ -48,6 +48,9 @@ func (r *Registry) Register(name string, value any) {
 		panic("dubi: nil registry")
 	}
 	name = normalizeName(name)
+	if registerNotification(name, value) {
+		return
+	}
 	if value == nil {
 		panic("dubi: cannot register nil value")
 	}
@@ -200,9 +203,9 @@ type RegistrationSet interface {
 	Registrations() map[string]any
 }
 
-// Register adds any registration, including Profile values, to the process
-// registry. A RegistrationSet can be passed alone to register its entries.
-// Profiles are metadata and are selected by Run.
+// Register routes Notification definitions to the global notification catalog
+// and other registrations to the process Registry. A RegistrationSet can be
+// passed alone. Profiles select components at Run; Notifications bypass them.
 func Register(nameOrSet any, values ...any) {
 	if len(values) == 0 {
 		if set, ok := nameOrSet.(RegistrationSet); ok {
@@ -213,7 +216,7 @@ func Register(nameOrSet any, values ...any) {
 			}
 			sort.Strings(names)
 			for _, name := range names {
-				globalRegistry.Register(name, entries[name])
+				registerValue(name, entries[name])
 			}
 			return
 		}
@@ -223,7 +226,14 @@ func Register(nameOrSet any, values ...any) {
 	if !ok || len(values) != 1 {
 		panic("dubi: Register requires a name and value or a registration set")
 	}
-	globalRegistry.Register(name, values[0])
+	registerValue(name, values[0])
+}
+
+func registerValue(name string, value any) {
+	if registerNotification(normalizeName(name), value) {
+		return
+	}
+	globalRegistry.Register(name, value)
 }
 
 func Lookup(name string) (any, bool) { return globalRegistry.Lookup(name) }

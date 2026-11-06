@@ -2,6 +2,7 @@ package dubi
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/dubi-project/dubi-go/base"
@@ -23,13 +24,13 @@ type Method struct {
 func (Method) Scope() string { return "core:method" }
 
 // Service is a business operation callable locally by registration name or
-// through BUS by Subject. The default BUS is process-local and in-memory.
+// through BUS by registration name. Listen/Listens add Notification listeners.
 type Service struct {
 	Name string
 	Desc string
-	// Subject is the BUS subscription name. Empty uses the registration name.
-	// Multiple services may share a subject without sharing a registration key.
-	Subject string
+	// Listen and Listens are additional Notify subscriptions, merged and deduplicated.
+	Listen  string
+	Listens []string
 	// Group controls Dispatch. Empty falls back to Role, Tenant, then "dubi".
 	Group string
 	// Retry contains the delays before each additional Enqueue attempt.
@@ -93,15 +94,29 @@ func (c *coreModule) Register(name string, value any) {
 }
 
 func (c *coreModule) registerService(name string, service Service) {
-	if service.Subject == "" {
-		service.Subject = name
-	}
+	service.Listens = serviceListeners(service.Listen, service.Listens)
 	service.Group = serviceGroup(service.Group, DefaultRuntime().Identity())
 	service.Retry = append([]time.Duration(nil), service.Retry...)
 	service.Settings = cloneConfigMap(service.Settings)
 	service.Args = cloneTriggerVars(service.Args, false)
 	service.Data = cloneTriggerVars(service.Data, false)
 	c.services[name] = service
+}
+
+func serviceListeners(listen string, listens []string) []string {
+	var result []string
+	seen := make(map[string]bool)
+	for _, value := range append([]string{listen}, listens...) {
+		if value = strings.TrimSpace(value); value == "" {
+			continue
+		}
+		value = normalizeName(value)
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (c *coreModule) Reset() {

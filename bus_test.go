@@ -44,7 +44,7 @@ func TestBusRequestAndInvokeRouting(t *testing.T) {
 	rt.Register("same", Method{Action: func(*Context) Map { return Map{"kind": "method"} }})
 	rt.Register("same", Service{Action: func(*Context) Map { return Map{"kind": "service"} }})
 	for _, name := range []string{"a", "b"} {
-		rt.Register(name, Service{Subject: "topic", Action: func(ctx *Context) Map { return Map{"name": ctx.Name} }})
+		rt.Register(name, Service{Listen: "topic", Action: func(ctx *Context) Map { return Map{"name": ctx.Name} }})
 	}
 	startTestBus(t, rt)
 	if got, _ := Invoke("same"); got["kind"] != "method" {
@@ -54,7 +54,8 @@ func TestBusRequestAndInvokeRouting(t *testing.T) {
 		t.Fatalf("Request = %v", got)
 	}
 	for i := 0; i < 4; i++ {
-		got, res := Request("topic")
+		name := []string{"a", "b"}[i%2]
+		got, res := Request(name)
 		if (res != nil && res.Fail()) || got["name"] != []string{"a", "b"}[i%2] {
 			t.Fatalf("round robin = %v, %v", got, res)
 		}
@@ -63,8 +64,8 @@ func TestBusRequestAndInvokeRouting(t *testing.T) {
 	if got := meta.Request("same"); got["kind"] != "service" || meta.Result().Fail() {
 		t.Fatalf("Meta.Request = %v", got)
 	}
-	if got := meta.Invoke("topic"); got["name"] != "a" {
-		t.Fatalf("Invoke fallback = %v", got)
+	if got := meta.Invoke("topic"); got != nil || meta.Result() == nil || meta.Result().OK() {
+		t.Fatal("Invoke treated Listen as a service alias")
 	}
 	if _, res := Request("missing"); res == nil || res.OK() {
 		t.Fatal("missing request succeeded")
@@ -84,7 +85,7 @@ func TestBusBroadcastAndDispatch(t *testing.T) {
 	rt := testRuntime(WithRole("worker"), WithTenant("tenant"))
 	seen := make(chan string, 16)
 	for name, group := range map[string]string{"mail.a": "mail", "mail.b": "mail", "audit": "audit", "default": ""} {
-		rt.Register(name, Service{Subject: "created", Group: group, Action: func(ctx *Context) { seen <- ctx.Name }})
+		rt.Register(name, Service{Listen: "created", Group: group, Action: func(ctx *Context) { seen <- ctx.Name }})
 	}
 	startTestBus(t, rt)
 	if core.services["default"].Group != "worker" {
@@ -92,8 +93,10 @@ func TestBusBroadcastAndDispatch(t *testing.T) {
 	}
 	meta := NewMeta()
 	meta.Result(Fail)
-	if err := meta.Broadcast("created"); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"mail.a", "mail.b", "audit", "default"} {
+		if err := meta.Broadcast(name); err != nil {
+			t.Fatal(err)
+		}
 	}
 	waitMemoryJobs()
 	counts := map[string]int{}
@@ -104,7 +107,7 @@ func TestBusBroadcastAndDispatch(t *testing.T) {
 		t.Fatalf("broadcast recipients = %v", counts)
 	}
 	for i := 0; i < 2; i++ {
-		if err := meta.Dispatch("created"); err != nil {
+		if err := meta.Dispatch("mail.a"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +116,7 @@ func TestBusBroadcastAndDispatch(t *testing.T) {
 	for len(seen) > 0 {
 		counts[<-seen]++
 	}
-	if !reflect.DeepEqual(counts, map[string]int{"mail.a": 1, "mail.b": 1, "audit": 2, "default": 2}) {
+	if !reflect.DeepEqual(counts, map[string]int{"mail.a": 2}) {
 		t.Fatalf("dispatch recipients = %v", counts)
 	}
 	if meta.Result() != Fail {
@@ -149,7 +152,7 @@ func TestBusQueueSelectsOneAndBroadcastIsolatesRecipients(t *testing.T) {
 	}
 	seen := make(chan observation, 8)
 	for _, name := range []string{"a", "b"} {
-		rt.Register(name, Service{Subject: "shared", Group: name, Action: func(ctx *Context) {
+		rt.Register(name, Service{Listen: "shared", Group: name, Action: func(ctx *Context) {
 			payload := ctx.Value["nested"].(Map)
 			seen <- observation{ctx.Name, payload["value"].(string), ctx.Attempt()}
 			payload["value"] = ctx.Name
@@ -157,13 +160,15 @@ func TestBusQueueSelectsOneAndBroadcastIsolatesRecipients(t *testing.T) {
 	}
 	startTestBus(t, rt)
 	value := Map{"nested": Map{"value": "original"}}
-	for i := 0; i < 2; i++ {
-		if err := Enqueue("shared", value); err != nil {
+	for _, name := range []string{"a", "b"} {
+		if err := Enqueue(name, value); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := Broadcast("shared", value); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"a", "b"} {
+		if err := Broadcast(name, value); err != nil {
+			t.Fatal(err)
+		}
 	}
 	waitMemoryJobs()
 	counts := map[observation]int{}
@@ -277,12 +282,13 @@ func TestBusCapacityAndShutdown(t *testing.T) {
 	t.Setenv("DUBI_CONFIG", path)
 	started := make(chan struct{}, 1)
 	finished := make(chan struct{}, 1)
+	Register("fan", Notification{})
 	for _, name := range []string{"fan.a", "fan.b"} {
-		rt.Register(name, Service{Subject: "fan", Action: func(*Context) { t.Error("partial fan-out despite rejected admission") }})
+		rt.Register(name, Service{Listen: "fan", Group: name, Action: func(*Context) { t.Error("partial fan-out despite rejected admission") }})
 	}
 	rt.Register("block", Service{Action: func(ctx *Context) { started <- struct{}{}; <-ctx.Done(); finished <- struct{}{} }})
 	startTestBus(t, rt)
-	if err := Broadcast("fan"); !errors.Is(err, ErrBusFull) {
+	if err := Notify("fan"); !errors.Is(err, ErrBusFull) {
 		t.Fatalf("fan-out capacity = %v", err)
 	}
 	if err := Enqueue("block"); err != nil {
@@ -328,6 +334,7 @@ type testBusHook struct {
 	host     Host
 	services []ServiceInfo
 	calls    []string
+	notified Map
 }
 
 func (h *testBusHook) Setup(*Context) error { h.services = h.host.Services(); return nil }
@@ -368,7 +375,7 @@ func TestBusHookTakeoverAndProfileCatalog(t *testing.T) {
 	rt := testRuntime(WithEndpoint("reserved-server:7000"), WithRole("worker"))
 	hook := &testBusHook{}
 	mountTestBus(t, hook)
-	rt.Register("keep", Service{Subject: "topic", Retry: []time.Duration{time.Second}, Action: func(*Context) Map { return Map{"local": true} }})
+	rt.Register("keep", Service{Listen: "topic", Retry: []time.Duration{time.Second}, Action: func(*Context) Map { return Map{"local": true} }})
 	rt.Register("keep", Method{Action: func(*Context) Map { return Map{"wrong": true} }})
 	rt.Register("skip", Service{})
 	rt.Register("selected", Profile{Include: []string{"core:service:keep", "core:method:keep"}})
@@ -376,7 +383,7 @@ func TestBusHookTakeoverAndProfileCatalog(t *testing.T) {
 	if bus.memory != nil {
 		t.Fatal("memory BUS allocated despite external hook")
 	}
-	if len(hook.services) != 1 || hook.services[0].Name != "keep" || hook.services[0].Subject != "topic" || hook.services[0].Group != "worker" {
+	if len(hook.services) != 1 || hook.services[0].Name != "keep" || !reflect.DeepEqual(hook.services[0].Listens, []string{"topic"}) || hook.services[0].Group != "worker" {
 		t.Fatalf("catalog = %#v", hook.services)
 	}
 	hook.services[0].Retry[0] = time.Hour
@@ -461,8 +468,8 @@ func TestBusExternalDeliveryCancellationAndPanic(t *testing.T) {
 
 func TestBusStartupRetryRebuildsSelectedSubscriptions(t *testing.T) {
 	rt := testRuntime()
-	rt.Register("keep", Service{Subject: "shared", Action: func(*Context) Map { return Map{"keep": true} }})
-	rt.Register("removed", Service{Subject: "removed", Action: func(*Context) Map { return Map{"wrong": true} }})
+	rt.Register("keep", Service{Listen: "shared", Action: func(*Context) Map { return Map{"keep": true} }})
+	rt.Register("removed", Service{Listen: "removed", Action: func(*Context) Map { return Map{"wrong": true} }})
 	rt.Register("selected", Profile{Include: []string{"core:service:keep"}})
 	testLifecycleModule.startError = errors.New("startup failure")
 	if err := rt.Run(""); err == nil {
@@ -473,7 +480,7 @@ func TestBusStartupRetryRebuildsSelectedSubscriptions(t *testing.T) {
 	}
 	testLifecycleModule.startError = nil
 	startTestBus(t, rt, "selected")
-	if data, _ := Request("shared"); data["keep"] != true {
+	if data, _ := Request("keep"); data["keep"] != true {
 		t.Fatalf("selected subscription = %v", data)
 	}
 	if _, result := Invoke("removed"); result == nil || result.OK() {
@@ -527,4 +534,10 @@ func TestBusRejectsInvalidRetryAndOptions(t *testing.T) {
 			t.Fatalf("invalid options accepted: %v", options)
 		}
 	}
+}
+
+func (h *testBusHook) Notify(_ *Meta, _ string, value Map) error {
+	h.calls = append(h.calls, "notify")
+	h.notified = value
+	return nil
 }

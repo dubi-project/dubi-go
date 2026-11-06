@@ -19,7 +19,8 @@ var (
 )
 
 // BusHook is implemented by a mounted Module to replace the default BUS.
-// Names are subscription subjects. Async methods acknowledge submission, not
+// Request/Broadcast/Dispatch/Enqueue address service registration names.
+// Notify addresses registered Notification names. Async methods acknowledge submission, not
 // business execution. Implementations must snapshot inputs before returning,
 // honor Meta.Context for admission/Request, and join consumers during Stop.
 // A module uses Host.Services in Setup and Host.InvokeLocalService on delivery.
@@ -28,12 +29,13 @@ type BusHook interface {
 	Broadcast(*Meta, string, Map) error
 	Dispatch(*Meta, string, Map) error
 	Enqueue(*Meta, string, Map) error
+	Notify(*Meta, string, Map) error
 }
 
 // ServiceInfo describes one loaded subscription, not its business Action.
 type ServiceInfo struct {
 	Name    string
-	Subject string
+	Listens []string
 	Group   string
 	Retry   []time.Duration
 }
@@ -49,7 +51,6 @@ type BusDelivery struct {
 // do not survive process exit. Error is a captured result message.
 type BusFailure struct {
 	ID       string
-	Subject  string
 	Service  string
 	Attempts int
 	Value    Map
@@ -81,7 +82,7 @@ func serviceGroup(group string, identity Identity) string {
 func serviceCatalog() []ServiceInfo {
 	items := make([]ServiceInfo, 0, len(core.services))
 	for name, service := range core.services {
-		items = append(items, ServiceInfo{Name: name, Subject: service.Subject, Group: service.Group, Retry: append([]time.Duration(nil), service.Retry...)})
+		items = append(items, ServiceInfo{Name: name, Listens: append([]string(nil), service.Listens...), Group: service.Group, Retry: append([]time.Duration(nil), service.Retry...)})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items

@@ -317,5 +317,5 @@ ctx.Answer(ctx.Result(), user)
 
 `ctx.HTTP.Response` 的类型是 `http.ResponseWriter`。原来的顶级
 `ctx.Request`、`ctx.Writer` 字段已移除。`ctx.Request(...)` 通过 BUS 调用 Service；
-`ctx.Broadcast`、`ctx.Dispatch`、`ctx.Enqueue` 也由 Meta 提供。
+`ctx.Broadcast`、`ctx.Dispatch`、`ctx.Enqueue`、`ctx.Notify` 也由 Meta 提供。
 原生 HTTP 对象只在当前请求期间有效，不应传给后台任务。

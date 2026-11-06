@@ -9,32 +9,40 @@ dubi.Register("user.get", dubi.Service{})
 dubi.Register("worker", dubi.Profile{})
 ```
 
-Services can declare a shared BUS subscription name independently of their
-registration names:
+Services keep their registration names for all four BUS calls and can also listen
+to registered notifications:
 
 ```go
+dubi.Register("user.created", dubi.Notification{
+    Name: "User created",
+    Args: Vars{"id": {Type: "string", Required: true}},
+})
 dubi.Register("mail.welcome", dubi.Service{
-	Subject: "user.created",
-	Group:   "mail",
-	Action:  sendWelcome,
+    Listen: "user.created",
+    Group: "mail",
+    Action: sendWelcome,
 })
 dubi.Register("account.initialize", dubi.Service{
-	Subject: "user.created",
-	Group:   "account",
-	Action:  initializeAccount,
+    Listens: []string{"user.created"},
+    Group: "account",
+    Action: initializeAccount,
 })
 ```
 
-An empty `Subject` defaults to the registration name when the service is loaded.
-Registry replacement, Profile matching, and local `Invoke` still use registration
-names, so these two handlers coexist and can be selected independently. Registering
-the same service name again replaces it. `Invoke` falls back to BUS Request if no
-local Method or Service has the requested registration name.
+`Request`, `Broadcast`, `Dispatch`, and `Enqueue` address Service registration
+names. `Notify("user.created", args)` validates the Notification's arguments and
+sends to one listening Service per group. Listen/Listens are merged and deduplicated
+and never act as aliases for the four service calls. `Subject` has been removed.
 
-The built-in memory BUS provides `Request`, `Broadcast`, `Dispatch`, and `Enqueue`
-on both `dubi` and `Meta`. A mounted module implementing `BusHook` takes over all
-four calls. See the [BUS documentation](docs/bus.md) and [runnable example](examples/bus).
-The memory queue retries while the process is alive; it is not persistent.
+Notifications have no Action and live in a separate global catalog, outside
+Registry entries and Profile selection. `dubi.Notifications()` returns detached
+definitions for documentation. Definitions may be replaced even after startup;
+`Reset` clears them. `Invoke` remains local-first with BUS Request fallback.
+
+The built-in memory BUS implements all five calls on both `dubi` and `Meta`.
+A mounted module implementing `BusHook` takes over delivery; Notify registration
+and argument checks remain in the main package. See the [BUS documentation](docs/bus.md)
+and [runnable example](examples/bus). The memory queue is not persistent.
 
 Shared dynamic values live in [`base`](base): `base.Any`, `base.Map`,
 `base.List`, and `base.Res`.

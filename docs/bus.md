@@ -1,67 +1,108 @@
 # BUS
 
-BUS calls address `Service.Subject`, which defaults to the registration name.
-Different services can share a subject. Registry keys, Profile filters, and
-local invocation still use their distinct registration names.
+Services retain their registration names. Notifications are separately registered
+contracts without Action or business logic:
 
 ```go
+dubi.Register("user.created", dubi.Notification{
+    Name: "User created",
+    Desc: "Sent after successful user creation",
+    Args: Vars{"id": {Type: "string", Required: true}},
+})
 dubi.Register("mail.welcome", dubi.Service{
-    Subject: "user.created",
+    Listen: "user.created",
     Group: "mail",
     Retry: []time.Duration{5 * time.Second, 30 * time.Second},
     Action: sendWelcome,
 })
-dubi.Register("account.initialize", dubi.Service{
-    Subject: "user.created",
-    Group: "account",
-    Action: initializeAccount,
+dubi.Register("audit.record", dubi.Service{
+    Listens: []string{"user.created", "user.deleted"},
+    Group: "audit",
+    Action: recordAudit,
 })
 ```
 
+`Listen` and `Listens` are merged, whitespace-trimmed, and deduplicated; empty
+names are ignored. They are used only by Notify. The former Subject field has
+been removed and has no compatibility alias.
+
 ## Calls
 
-| Call | Recipients | Return value |
-| --- | --- | --- |
-| `Request` | One matching service | Business data/result |
-| `Broadcast` | Every matching service | Submission error only |
-| `Dispatch` | One matching service per group | Submission error only |
-| `Enqueue` | One consumer, with configured retries | Admission error only |
+| Call | Address | Recipients | Return value |
+| --- | --- | --- | --- |
+| `Request` | Service registration name | One instance | Business data/result |
+| `Broadcast` | Service registration name | Every instance | Submission error |
+| `Dispatch` | Service registration name | One instance per group | Submission error |
+| `Enqueue` | Service registration name | One consumer, with retries | Admission error |
+| `Notify` | Notification registration name | One listening Service per group | Validation/submission error |
 
 ```go
 data, result := dubi.Request("user.get", Map{"id": "42"})
-err := dubi.Broadcast("config.changed", Map{"version": 2})
-err = dubi.Dispatch("user.created", Map{"id": "42"})
-err = dubi.Enqueue("mail.send", Map{"to": "user@example.test"})
+err := dubi.Broadcast("config.reload", Map{"version": 2})
+err = dubi.Dispatch("cache.refresh", Map{"id": "42"})
+err = dubi.Enqueue("mail.welcome", Map{"id": "42"})
+err = dubi.Notify("user.created", Map{"id": "42"})
 ```
 
-On a Meta, `ctx.Request` returns Map and stores the business result in
-`ctx.Result()`. The other three return error and do not overwrite that result.
-`Request` always uses BUS, including when a local Method has the same name.
-`Invoke` remains local-first and falls back to Request only when neither a local
-Method nor Service exists. `Execute` remains local Method only.
+On Meta, Request returns Map and stores the result in `ctx.Result()`. The other
+calls return error without changing that result. Request always uses BUS, even
+when a local Method has the same name. Invoke remains local-first with Request
+fallback; Execute remains local Method only.
 
-These calls become available after all modules finish Start. Use the process
-START trigger for startup work that requires BUS. Calls before Start or after
-Stop return `ErrBusNotReady`. Request cancellation/deadlines come from
-`Meta.Context()`; handlers must cooperate with context cancellation.
+The four service calls never search notification listeners. A Service and a
+Notification may have the same registration name and remain independent. A Service
+does not automatically listen to the same-named Notification: declare Listen/Listens.
+With the single-process Registry there is one Service per registration name;
+Broadcast/Dispatch to that name therefore execute it once locally. Different
+Services sharing a notification name coexist without replacing each other.
 
-## Groups
+## Notification catalog and validation
 
-The effective Dispatch group is the first nonempty value:
+`dubi.Register` sends Notification values/pointers directly to a global catalog.
+They are not component entries, have no Scope, are not delivered to modules, and
+never enter Registry Entries, Runtime Entries/AllEntries, or Profile filtering.
+The compatibility `Runtime.Register`, `Scope.Register`, and `Registry.Register`
+paths also route definitions into this same global catalog.
+
+`dubi.Notifications()` returns a detached map keyed by registration name for
+introspection and documentation. Same-name registration replaces the definition.
+Registration remains allowed after Registry freeze; concurrent sends use an
+immutable snapshot of the definition they looked up. Reset clears the catalog.
+
+Notify requires a registered Notification in the sending process, even if there
+are no listeners. Unknown names return `ErrNotificationNotFound`. Listen does not
+implicitly register a Notification. You may declare listeners before the producer
+contract is registered, but cannot send until that contract exists.
+
+Before invoking any BUS Hook, Notify applies the Notification Args mapping,
+including defaults, conversion and validation. A failed validation is returned
+as an error (the underlying Res) and no delivery is submitted. If Args is empty,
+the payload is passed through as a detached snapshot. On receipt, each Service
+still applies its own Args mapping before executing Action.
+
+Notify neither persists nor retries, even when a listener Service has Retry
+configured. A registered notification without listeners succeeds and is dropped.
+Broadcast/Dispatch without matching services likewise return nil. Request reports
+a failed Res when missing, and memory Enqueue returns `ErrBusNoService`.
+
+## Groups and lifecycle
+
+The effective Dispatch/Notify group is the first nonempty value:
 
 ```text
 Service.Group -> Identity.Role -> Identity.Tenant -> "dubi"
 ```
 
-Grouping is per subject. For independent operations such as mail and account
-initialization, declare different groups. Multiple handlers in one group share
-one notification. The memory BUS uses round robin within each group; Request
-and Enqueue also select one recipient by round robin across all matches.
-Broadcast ignores groups and executes every matching handler.
+For independent notification effects such as mail and audit, declare different
+groups. The memory implementation selects one listener per group by round robin;
+it does not send multiple copies when Listen and Listens repeat a name. Only
+Profile-selected Services participate. Notification definitions themselves are
+always available, even if every component is excluded by the Profile.
 
-Without subscribers, Broadcast and Dispatch return nil and drop the notification;
-they do not replay it when a subscriber appears. Request reports a failed Res,
-and memory Enqueue returns `ErrBusNoService` when there is no consumer.
+Calls become available after all modules finish Start. Use the process START
+trigger for startup work. Calls before Start or after Stop return ErrBusNotReady
+(unknown Notify names still return ErrNotificationNotFound). Request deadlines
+come from Meta.Context; handlers must cooperate with cancellation.
 
 ## Memory queue
 
@@ -84,7 +125,7 @@ for idempotency where duplicate execution would be harmful.
 
 After retries are exhausted, the failure is logged and retained in `dubi.BusFailures()`.
 The memory BUS retains the most recent `capacity` failures, including task ID,
-subject, registration name, attempt count, original payload, and error text.
+service registration name, attempt count, original payload, and error text.
 
 ```toml
 [bus.options]
@@ -121,7 +162,7 @@ Mount automatically recognizes BusHook. Mounting the same instance again is a
 no-op; a second external BUS implementation is a conflict. The memory BUS is
 neither allocated nor started when an external hook is selected.
 
-The hook implements Request, Broadcast, Dispatch, and Enqueue, each taking
+The hook implements Request, Broadcast, Dispatch, Enqueue, and Notify, each taking
 `(*dubi.Meta, string, base.Map)`. Request returns `(base.Map, base.Res)`;
 the other methods return error. Hook methods receive detached metadata/payload
 snapshots, but their admission context ends on return: asynchronous implementations
@@ -130,7 +171,8 @@ they retain. Keep task IDs stable across retries and manage acknowledgments and
 retry storage inside the transport implementation.
 
 During Setup, `host.Services()` returns the Profile-selected catalog with resolved
-subjects/groups and retry delays. During delivery, use:
+Listens/groups and retry delays. Notification definitions are available through
+`dubi.Notifications()`; the main package validates Notify before calling the hook. During delivery, use:
 
 ```go
 data, result, found := host.InvokeLocalService(meta, registrationName, value)
@@ -158,6 +200,6 @@ than silently using local delivery. External hooks take precedence over endpoint
 
 ## Web
 
-Web actions use the same four calls directly, including `ctx.Request(...)`.
+Web actions use all five calls directly, including `ctx.Request(...)`.
 Native HTTP objects are now `ctx.HTTP.Request` and `ctx.HTTP.Response`
 (`http.ResponseWriter`). This replaces the previous top-level Request/Writer fields.

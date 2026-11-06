@@ -10,11 +10,12 @@ import (
 
 func main() {
 	finished := make(chan string, 5)
+	dubi.Register("user.created", dubi.Notification{Name: "User created", Args: Vars{"id": {Type: "string", Required: true}}})
 	dubi.Register("user.get", dubi.Service{Action: func(ctx *dubi.Context) Map {
 		return Map{"id": ctx.Value["id"], "name": "Ada"}
 	}})
 	for name, group := range map[string]string{"mail.welcome": "mail", "account.initialize": "account"} {
-		dubi.Register(name, dubi.Service{Subject: "user.created", Group: group, Action: func(ctx *dubi.Context) {
+		dubi.Register(name, dubi.Service{Listen: "user.created", Group: group, Action: func(ctx *dubi.Context) {
 			finished <- ctx.Name
 		}})
 	}
@@ -36,9 +37,12 @@ func main() {
 	data, result := dubi.Request("user.get", Map{"id": "42"})
 	log.Printf("Request: data=%v result=%v", data, result)
 	for _, call := range []func(string, ...Map) error{dubi.Broadcast, dubi.Dispatch} {
-		if err := call("user.created", Map{"id": "42"}); err != nil {
+		if err := call("mail.welcome", Map{"id": "42"}); err != nil {
 			log.Fatal(err)
 		}
+	}
+	if err := dubi.Notify("user.created", Map{"id": "42"}); err != nil {
+		log.Fatal(err)
 	}
 	if err := dubi.Enqueue("mail.send"); err != nil {
 		log.Fatal(err)

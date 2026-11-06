@@ -103,6 +103,9 @@ func resetRuntime(rt *Runtime) {
 		}
 	}
 	globalRegistry = NewRegistry()
+	notifications.Lock()
+	notifications.items = nil
+	notifications.Unlock()
 	fresh := newRuntime()
 	rt.mu.Lock()
 	rt.identity = fresh.identity

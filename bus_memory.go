@@ -51,25 +51,29 @@ func parseMemoryBusOptions(config Map) (memoryBusOptions, error) {
 }
 
 type memoryBus struct {
-	mu            sync.Mutex
-	subscriptions map[string][]ServiceInfo
-	cursors       map[string]uint64
-	ctx           context.Context
-	ready         bool
-	active        sync.WaitGroup
-	workers       chan struct{}
-	capacity      int
-	pending       int
-	failures      []BusFailure
+	mu        sync.Mutex
+	services  map[string][]ServiceInfo
+	listeners map[string][]ServiceInfo
+	cursors   map[string]uint64
+	ctx       context.Context
+	ready     bool
+	active    sync.WaitGroup
+	workers   chan struct{}
+	capacity  int
+	pending   int
+	failures  []BusFailure
 }
 
 func newMemoryBus(services []ServiceInfo, options memoryBusOptions) *memoryBus {
 	b := &memoryBus{
-		subscriptions: make(map[string][]ServiceInfo), cursors: make(map[string]uint64),
+		services: make(map[string][]ServiceInfo), listeners: make(map[string][]ServiceInfo), cursors: make(map[string]uint64),
 		workers: make(chan struct{}, options.workers), capacity: options.capacity,
 	}
 	for _, service := range services {
-		b.subscriptions[service.Subject] = append(b.subscriptions[service.Subject], service)
+		b.services[service.Name] = append(b.services[service.Name], service)
+		for _, name := range service.Listens {
+			b.listeners[name] = append(b.listeners[name], service)
+		}
 	}
 	return b
 }
@@ -93,18 +97,18 @@ func (b *memoryBus) choose(key string, services []ServiceInfo) ServiceInfo {
 	return services[index]
 }
 
-func (b *memoryBus) Request(meta *Meta, subject string, value Map) (Map, Res) {
+func (b *memoryBus) Request(meta *Meta, name string, value Map) (Map, Res) {
 	b.mu.Lock()
 	if !b.ready || b.ctx.Err() != nil {
 		b.mu.Unlock()
 		return nil, ErrorResult(ErrBusNotReady)
 	}
-	services := b.subscriptions[subject]
+	services := b.services[name]
 	if len(services) == 0 {
 		b.mu.Unlock()
-		return nil, ErrorResult(fmt.Errorf("%w: %s", ErrBusNoService, subject))
+		return nil, ErrorResult(fmt.Errorf("%w: %s", ErrBusNoService, name))
 	}
-	service := b.choose("request:"+subject, services)
+	service := b.choose("request:"+name, services)
 	b.mu.Unlock()
 	if err := meta.Context().Err(); err != nil {
 		return nil, ErrorResult(err)
@@ -112,17 +116,17 @@ func (b *memoryBus) Request(meta *Meta, subject string, value Map) (Map, Res) {
 	return invokeBusService(meta, service.Name, value)
 }
 
-func (b *memoryBus) Broadcast(meta *Meta, subject string, value Map) error {
-	return b.submit(meta, "broadcast", subject, value)
+func (b *memoryBus) Broadcast(meta *Meta, name string, value Map) error {
+	return b.submit(meta, "broadcast", name, value)
 }
-func (b *memoryBus) Dispatch(meta *Meta, subject string, value Map) error {
-	return b.submit(meta, "dispatch", subject, value)
+func (b *memoryBus) Dispatch(meta *Meta, name string, value Map) error {
+	return b.submit(meta, "dispatch", name, value)
 }
-func (b *memoryBus) Enqueue(meta *Meta, subject string, value Map) error {
-	return b.submit(meta, "enqueue", subject, value)
+func (b *memoryBus) Enqueue(meta *Meta, name string, value Map) error {
+	return b.submit(meta, "enqueue", name, value)
 }
 
-func (b *memoryBus) submit(meta *Meta, mode, subject string, value Map) error {
+func (b *memoryBus) submit(meta *Meta, mode, name string, value Map) error {
 	if err := meta.Context().Err(); err != nil {
 		return err
 	}
@@ -131,11 +135,14 @@ func (b *memoryBus) submit(meta *Meta, mode, subject string, value Map) error {
 		b.mu.Unlock()
 		return ErrBusNotReady
 	}
-	services := b.subscriptions[subject]
+	services := b.services[name]
+	if mode == "notify" {
+		services = b.listeners[name]
+	}
 	if len(services) == 0 {
 		b.mu.Unlock()
 		if mode == "enqueue" {
-			return fmt.Errorf("%w: %s", ErrBusNoService, subject)
+			return fmt.Errorf("%w: %s", ErrBusNoService, name)
 		}
 		return nil // Fire-and-forget notifications without subscribers are dropped.
 	}
@@ -144,8 +151,8 @@ func (b *memoryBus) submit(meta *Meta, mode, subject string, value Map) error {
 	case "broadcast":
 		selected = services
 	case "enqueue":
-		selected = []ServiceInfo{b.choose("enqueue:"+subject, services)}
-	case "dispatch":
+		selected = []ServiceInfo{b.choose("enqueue:"+name, services)}
+	case "dispatch", "notify":
 		groups := make(map[string][]ServiceInfo)
 		for _, service := range services {
 			groups[service.Group] = append(groups[service.Group], service)
@@ -156,8 +163,8 @@ func (b *memoryBus) submit(meta *Meta, mode, subject string, value Map) error {
 		}
 		sort.Strings(names)
 		for _, group := range names {
-			// A length prefix prevents ambiguous subject/group cursor keys.
-			key := fmt.Sprintf("dispatch:%d:%s%s", len(subject), subject, group)
+			// A length prefix prevents ambiguous name/group cursor keys.
+			key := fmt.Sprintf("%s:%d:%s%s", mode, len(name), name, group)
 			selected = append(selected, b.choose(key, groups[group]))
 		}
 	}
@@ -213,11 +220,11 @@ func (b *memoryBus) run(meta *Meta, service ServiceInfo, payload Map, queue bool
 			return
 		}
 		if !queue {
-			log.Printf("dubi: BUS notification %q -> %q failed: %v", service.Subject, service.Name, result)
+			log.Printf("dubi: BUS delivery to %q failed: %v", service.Name, result)
 			return
 		}
 		if attempt > len(service.Retry) {
-			b.recordFailure(BusFailure{ID: meta.Id(), Subject: service.Subject, Service: service.Name,
+			b.recordFailure(BusFailure{ID: meta.Id(), Service: service.Name,
 				Attempts: attempt, Value: payload, Error: result.Error(), Time: time.Now()})
 			return
 		}
@@ -237,7 +244,7 @@ func invokeBusService(meta *Meta, name string, value Map) (Map, Res) {
 }
 
 func (b *memoryBus) recordFailure(failure BusFailure) {
-	log.Printf("dubi: BUS task %s (%s -> %s) failed after %d attempts: %s", failure.ID, failure.Subject, failure.Service, failure.Attempts, failure.Error)
+	log.Printf("dubi: BUS task %s (%s) failed after %d attempts: %s", failure.ID, failure.Service, failure.Attempts, failure.Error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.failures) == b.capacity {
@@ -256,4 +263,8 @@ func (b *memoryBus) Failures() []BusFailure {
 		failures[i].Value = cloneConfigMap(failures[i].Value)
 	}
 	return failures
+}
+
+func (b *memoryBus) Notify(meta *Meta, name string, value Map) error {
+	return b.submit(meta, "notify", name, value)
 }
