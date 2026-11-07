@@ -22,7 +22,7 @@ func main() {
 	dubi.Register("mail.send", dubi.Service{Retry: []time.Duration{20 * time.Millisecond}, Action: func(ctx *dubi.Context) Res {
 		log.Printf("task=%s attempt=%d", ctx.Id(), ctx.Attempt())
 		if ctx.Attempt() == 1 {
-			return dubi.Fail
+			return dubi.Retry
 		}
 		finished <- ctx.Name
 		return dubi.OK

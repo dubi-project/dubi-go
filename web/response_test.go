@@ -25,6 +25,7 @@ func TestAnswerOptionalTextAndData(t *testing.T) {
 		{name: "nil result with data", action: func(ctx *Context) { ctx.Answer(nil, Map{"id": 1}) }, data: true},
 		{name: "explicit success", action: func(ctx *Context) { ctx.Answer(dubi.OK, Map{}) }, text: "成功"},
 		{name: "explicit failure", action: func(ctx *Context) { ctx.Answer(dubi.ResultOf(7, "invalid"), Map{}) }, code: 7, text: "invalid"},
+		{name: "retry marker preserves answer", action: func(ctx *Context) { ctx.Answer(dubi.ResultOf(7, "invalid").Retry(), Map{}) }, code: 7, text: "invalid"},
 		{name: "empty status", action: func(ctx *Context) { ctx.Answer(dubi.ResultOf(0, "")) }},
 		{name: "implicit ctx data", action: func(ctx *Context) { ctx.Data = Map{"id": 1}; ctx.Answer(nil) }, data: true},
 		{name: "explicit empty clears data", action: func(ctx *Context) { ctx.Data = Map{"id": 1}; ctx.Answer(nil, Map{}) }},

@@ -31,7 +31,9 @@ dubi.Register("account.initialize", dubi.Service{
 
 `Request`, `Broadcast`, `Dispatch`, and `Enqueue` address Service registration
 names. `Notify("user.created", args)` validates the Notification's arguments and
-sends to one listening Service per group. Listen/Listens are merged and deduplicated
+creates one queued task per listener group, reusing Enqueue execution and explicit
+retry rules. Retries keep the selected service name and task ID; they never resend
+the notification. Listen/Listens are merged and deduplicated
 and never act as aliases for the four service calls. `Subject` has been removed.
 
 Notifications have no Action and live in a separate global catalog, outside

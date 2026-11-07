@@ -24,6 +24,12 @@ var (
 // business execution. Implementations must snapshot inputs before returning,
 // honor Meta.Context for admission/Request, and join consumers during Stop.
 // A module uses Host.Services in Setup and Host.InvokeLocalService on delivery.
+// Subscription routing and group delivery belong entirely to the implementation,
+// not the caller or host. Notify publishes a notification; the receiving
+// subscription binds it to a service and executes it as an Enqueue task.
+// Retries preserve task identity and service name, never republish the notification.
+// Neither Dispatch nor Notify requires durable transport or a sender-side catalog
+// of recipients. An external hook never uses the built-in memory task executor.
 type BusHook interface {
 	Request(*Meta, string, Map) (Map, Res)
 	Broadcast(*Meta, string, Map) error
@@ -32,7 +38,8 @@ type BusHook interface {
 	Notify(*Meta, string, Map) error
 }
 
-// ServiceInfo describes one loaded subscription, not its business Action.
+// ServiceInfo describes a local service for a transport to bind subscriptions.
+// It is not a global recipient catalog or a sender-side routing plan.
 type ServiceInfo struct {
 	Name    string
 	Listens []string
@@ -47,15 +54,17 @@ type BusDelivery struct {
 	Attempt int
 }
 
-// BusFailure is an exhausted memory task. Memory failures, like memory tasks,
+// BusFailure is a terminal memory task failure. Memory failures, like tasks,
 // do not survive process exit. Error is a captured result message.
 type BusFailure struct {
-	ID       string
-	Service  string
-	Attempts int
-	Value    Map
-	Error    string
-	Time     time.Time
+	ID      string
+	Service string
+	// Notification is the source notification, empty for direct Enqueue tasks.
+	Notification string
+	Attempts     int
+	Value        Map
+	Error        string
+	Time         time.Time
 }
 
 // BusFailures returns retained failures if the selected implementation exposes
@@ -250,7 +259,7 @@ func busValue(values []Map) Map {
 	return nil
 }
 
-// Attempt is 1-based for Enqueue execution, and zero for other calls.
+// Attempt is 1-based for Enqueue and Notify tasks, and zero for other calls.
 func (m *Meta) Attempt() int {
 	if m == nil {
 		return 0

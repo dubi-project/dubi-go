@@ -16,7 +16,9 @@ type Host interface {
 	SyncToggle(name string, values ...Map)
 	// Services returns the Profile-selected catalog, available during Setup.
 	Services() []ServiceInfo
-	// InvokeLocalService never routes through BUS or executes a Method.
+	// InvokeLocalService executes one attempt for an exact registration name
+	// already bound by the transport subscription. It never routes through BUS,
+	// resolves a notification/group, schedules retries, or executes a Method.
 	InvokeLocalService(meta *Meta, name string, value Map, delivery ...BusDelivery) (Map, Res, bool)
 }
 

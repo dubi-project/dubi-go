@@ -71,8 +71,9 @@ func Notifications() map[string]Notification {
 }
 
 // Notify validates a registered notification before submitting it to BUS.
-// Each listener group receives one delivery; accepted notifications are neither
-// persisted nor retried. The returned error is not a listener business result.
+// BUS owns group delivery. A receiving subscription executes its bound service
+// using the same task and explicit-retry rules as Enqueue. Notification transport
+// need not be persistent. The returned error is not a listener business result.
 func Notify(name string, values ...Map) error { return notifyBus(nil, name, busValue(values)) }
 
 func (m *Meta) Notify(name string, values ...Map) error { return notifyBus(m, name, busValue(values)) }

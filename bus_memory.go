@@ -153,6 +153,8 @@ func (b *memoryBus) submit(meta *Meta, mode, name string, value Map) error {
 	case "enqueue":
 		selected = []ServiceInfo{b.choose("enqueue:"+name, services)}
 	case "dispatch", "notify":
+		// Emulate broker queue-group delivery in memory. This selection is local
+		// to this implementation; external hooks bind their own subscriptions.
 		groups := make(map[string][]ServiceInfo)
 		for _, service := range services {
 			groups[service.Group] = append(groups[service.Group], service)
@@ -176,16 +178,23 @@ func (b *memoryBus) submit(meta *Meta, mode, name string, value Map) error {
 	b.active.Add(len(selected))
 	lifetime := b.ctx
 	b.mu.Unlock()
+	queue := mode == "enqueue" || mode == "notify"
+	notification := ""
+	if mode == "notify" {
+		notification = name
+	}
 	for _, service := range selected {
+		// The subscription destination is now fixed. Notify enters the same
+		// task executor as Enqueue without another send or recipient selection.
 		// Detach from the entry request lifetime, including pooled Web Meta.
 		snapshot := copyBusMeta(meta, lifetime, true)
 		payload := cloneConfigMap(value)
-		go b.run(snapshot, service, payload, mode == "enqueue")
+		go b.run(snapshot, service, payload, queue, notification)
 	}
 	return nil
 }
 
-func (b *memoryBus) run(meta *Meta, service ServiceInfo, payload Map, queue bool) {
+func (b *memoryBus) run(meta *Meta, service ServiceInfo, payload Map, queue bool, notification string) {
 	defer func() {
 		b.mu.Lock()
 		b.pending--
@@ -223,8 +232,8 @@ func (b *memoryBus) run(meta *Meta, service ServiceInfo, payload Map, queue bool
 			log.Printf("dubi: BUS delivery to %q failed: %v", service.Name, result)
 			return
 		}
-		if attempt > len(service.Retry) {
-			b.recordFailure(BusFailure{ID: meta.Id(), Service: service.Name,
+		if !IsRetry(result) || attempt > len(service.Retry) {
+			b.recordFailure(BusFailure{ID: meta.Id(), Service: service.Name, Notification: notification,
 				Attempts: attempt, Value: payload, Error: result.Error(), Time: time.Now()})
 			return
 		}
@@ -244,7 +253,7 @@ func invokeBusService(meta *Meta, name string, value Map) (Map, Res) {
 }
 
 func (b *memoryBus) recordFailure(failure BusFailure) {
-	log.Printf("dubi: BUS task %s (%s) failed after %d attempts: %s", failure.ID, failure.Service, failure.Attempts, failure.Error)
+	log.Printf("dubi: BUS task %s (%s, notification=%q) failed after %d attempts: %s", failure.ID, failure.Service, failure.Notification, failure.Attempts, failure.Error)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.failures) == b.capacity {

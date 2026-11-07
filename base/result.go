@@ -12,5 +12,9 @@ type Res interface {
 	Status() string
 	Args() []Any
 	With(...Any) Res
+	// Retry returns a copy with retry enabled (or the supplied flag). It does
+	// not change the business code, status, or text arguments.
+	Retry(...bool) Res
+	Retriable() bool
 	Error() string
 }

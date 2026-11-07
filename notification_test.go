@@ -1,6 +1,7 @@
 package dubi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +11,111 @@ import (
 
 	. "github.com/dubi-project/dubi-go/base"
 )
+
+func TestNotifyRetriesSelectedServicesWithoutRepublishing(t *testing.T) {
+	rt := testRuntime()
+	Register("created", Notification{Args: Vars{"id": {Type: "int", Required: true}}})
+	type attempt struct {
+		name, id string
+		number   int
+		value    string
+	}
+	seen := make(chan attempt, 20)
+	gate := make(chan struct{})
+	for name, group := range map[string]string{
+		"mail.a": "mail", "mail.b": "mail", "account": "account", "invalid": "invalid", "exhausted": "exhausted",
+	} {
+		Register(name, Service{Listen: "created", Group: group, Retry: []time.Duration{time.Millisecond, time.Millisecond}, Action: func(ctx *Context) Res {
+			<-gate
+			seen <- attempt{ctx.Name, ctx.Id(), ctx.Attempt(), fmt.Sprint(ctx.Value["id"])}
+			ctx.Value["id"] = "mutated by service"
+			switch ctx.Name {
+			case "mail.a":
+				if ctx.Attempt() < 3 {
+					return Retry
+				}
+				return OK
+			case "invalid":
+				return Fail
+			case "exhausted":
+				return Retry
+			default:
+				return OK
+			}
+		}})
+	}
+	startTestBus(t, rt)
+	ctx, cancel := context.WithCancel(context.Background())
+	meta := NewMeta().WithContext(ctx)
+	value := Map{"id": "42"}
+	if err := meta.Notify("created", value); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	meta.Reset(context.Background())
+	value["id"] = "caller mutation"
+	// Already accepted tasks must not revalidate or republish the Notification.
+	Register("created", Notification{Args: Vars{"new.required.field": {Required: true}}})
+	close(gate)
+	waitMemoryJobs()
+	counts := map[string]int{}
+	ids := map[string]string{}
+	for len(seen) > 0 {
+		item := <-seen
+		counts[item.name]++
+		if previous, exists := ids[item.name]; exists && previous != item.id {
+			t.Fatalf("task ID changed: %#v", item)
+		}
+		ids[item.name] = item.id
+		if item.id == "" || item.number != counts[item.name] || item.value != "42" {
+			t.Fatalf("task changed across retries: %#v", item)
+		}
+	}
+	if !reflect.DeepEqual(counts, map[string]int{"mail.a": 3, "account": 1, "invalid": 1, "exhausted": 3}) {
+		t.Fatalf("unexpected replay/reselection: %v", counts)
+	}
+	unique := map[string]bool{}
+	for _, id := range ids {
+		unique[id] = true
+	}
+	if len(unique) != len(ids) {
+		t.Fatal("different group tasks shared an ID")
+	}
+	failures := BusFailures()
+	if len(failures) != 2 {
+		t.Fatalf("terminal failures = %#v", failures)
+	}
+	for _, failure := range failures {
+		if failure.Notification != "created" || failure.ID != ids[failure.Service] || failure.Attempts != counts[failure.Service] || fmt.Sprint(failure.Value["id"]) != "42" {
+			t.Fatalf("failure provenance changed: %#v", failure)
+		}
+	}
+}
+
+func TestNotifyShutdownCancelsDelayedTasks(t *testing.T) {
+	rt := testRuntime()
+	Register("shutdown", Notification{})
+	seen := make(chan int, 2)
+	Register("worker", Service{Listen: "shutdown", Retry: []time.Duration{time.Hour}, Action: func(ctx *Context) Res {
+		seen <- ctx.Attempt()
+		return Retry
+	}})
+	startTestBus(t, rt)
+	if err := Notify("shutdown"); err != nil {
+		t.Fatal(err)
+	}
+	if attempt := receiveBus(t, seen); attempt != 1 {
+		t.Fatalf("first attempt = %d", attempt)
+	}
+	done := make(chan error, 1)
+	go func() { done <- rt.End() }()
+	if err := receiveBus(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 0 {
+		t.Fatal("Notify retry survived shutdown")
+	}
+}
 
 func TestNotificationCatalogBypassesRegistryAndProfile(t *testing.T) {
 	rt := testRuntime()
@@ -80,7 +186,7 @@ func TestNotifyGroupsListenersAndValidatesBeforeDelivery(t *testing.T) {
 			Action: func(ctx *Context) Res {
 				seen <- observation{ctx.Name, ctx.Value.Clone(), ctx.Args.Clone()}
 				ctx.Value["source"] = "changed"
-				return Fail // Notify must never use the service retry policy.
+				return Fail // An ordinary failure is terminal even with Retry delays.
 			},
 		})
 	}

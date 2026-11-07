@@ -31,9 +31,9 @@ type Service struct {
 	// Listen and Listens are additional Notify subscriptions, merged and deduplicated.
 	Listen  string
 	Listens []string
-	// Group controls Dispatch. Empty falls back to Role, Tenant, then "dubi".
+	// Group controls Dispatch/Notify. Empty falls back to Role, Tenant, then "dubi".
 	Group string
-	// Retry contains the delays before each additional Enqueue attempt.
+	// Retry contains the delays before each additional Enqueue/Notify task attempt.
 	Retry    []time.Duration
 	Nullable bool
 	Args     Vars

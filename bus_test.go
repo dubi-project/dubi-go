@@ -204,7 +204,7 @@ func TestBusQueueRetriesAndSnapshots(t *testing.T) {
 		seen <- attempt{ctx.Id(), ctx.Attempt(), ctx.Language(), payload["value"].(string), time.Now()}
 		payload["value"] = "mutated by handler"
 		if ctx.Attempt() < 3 {
-			return nil, Fail
+			return nil, Retry
 		}
 		return Map{"ok": true}, OK
 	}})
@@ -238,7 +238,7 @@ func TestBusQueueRetriesAndSnapshots(t *testing.T) {
 	}
 }
 
-func TestBusExhaustionPanicAndNotificationNoRetry(t *testing.T) {
+func TestBusPanicIsTerminalForQueuesAndNotifications(t *testing.T) {
 	rt := testRuntime()
 	seen := make(chan int, 16)
 	rt.Register("broken", Service{Retry: []time.Duration{0}, Action: func(ctx *Context) {
@@ -260,11 +260,11 @@ func TestBusExhaustionPanicAndNotificationNoRetry(t *testing.T) {
 	for len(seen) > 0 {
 		counts[<-seen]++
 	}
-	if !reflect.DeepEqual(counts, map[int]int{0: 2, 1: 1, 2: 1}) {
+	if !reflect.DeepEqual(counts, map[int]int{0: 2, 1: 1}) {
 		t.Fatalf("attempts = %v", counts)
 	}
 	failures := BusFailures()
-	if len(failures) != 1 || failures[0].Attempts != 2 || failures[0].ID == "" || failures[0].Error == "" {
+	if len(failures) != 1 || failures[0].Attempts != 1 || failures[0].ID == "" || failures[0].Error == "" {
 		t.Fatalf("failures = %#v", failures)
 	}
 	failures[0].Value["v"] = "changed"
@@ -313,7 +313,7 @@ func TestBusCapacityAndShutdown(t *testing.T) {
 func TestBusShutdownCancelsRetry(t *testing.T) {
 	rt := testRuntime()
 	seen := make(chan int, 4)
-	rt.Register("retry", Service{Retry: []time.Duration{time.Hour}, Action: func(ctx *Context) Res { seen <- ctx.Attempt(); return Fail }})
+	rt.Register("retry", Service{Retry: []time.Duration{time.Hour}, Action: func(ctx *Context) Res { seen <- ctx.Attempt(); return Retry }})
 	startTestBus(t, rt)
 	if err := Enqueue("retry"); err != nil {
 		t.Fatal(err)
@@ -331,10 +331,12 @@ func TestBusShutdownCancelsRetry(t *testing.T) {
 
 type testBusHook struct {
 	testModule
-	host     Host
-	services []ServiceInfo
-	calls    []string
-	notified Map
+	host             Host
+	services         []ServiceInfo
+	calls            []string
+	notified         Map
+	notificationName string
+	dispatchName     string
 }
 
 func (h *testBusHook) Setup(*Context) error { h.services = h.host.Services(); return nil }
@@ -350,8 +352,9 @@ func (h *testBusHook) Broadcast(*Meta, string, Map) error {
 	h.calls = append(h.calls, "broadcast")
 	return nil
 }
-func (h *testBusHook) Dispatch(*Meta, string, Map) error {
+func (h *testBusHook) Dispatch(_ *Meta, name string, _ Map) error {
 	h.calls = append(h.calls, "dispatch")
+	h.dispatchName = name
 	return nil
 }
 func (h *testBusHook) Enqueue(*Meta, string, Map) error {
@@ -536,8 +539,9 @@ func TestBusRejectsInvalidRetryAndOptions(t *testing.T) {
 	}
 }
 
-func (h *testBusHook) Notify(_ *Meta, _ string, value Map) error {
+func (h *testBusHook) Notify(_ *Meta, name string, value Map) error {
 	h.calls = append(h.calls, "notify")
+	h.notificationName = name
 	h.notified = value
 	return nil
 }
