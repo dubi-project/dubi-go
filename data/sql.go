@@ -271,6 +271,16 @@ func (b *SQLBuilder) compileContains(logicalField, field string, value Any) (str
 		}
 		return "JSON_CONTAINS(" + field + ", CAST(" + b.bind(raw) + " AS JSON))", nil
 	case "sqlite":
+		if b.isArrayField != nil && b.isArrayField(logicalField) {
+			raw, err := jsonString(flattenSlice(value))
+			if err != nil {
+				return "", err
+			}
+			return "json_type(" + field + ") = 'array' AND NOT EXISTS (" +
+				"SELECT 1 FROM json_each(" + b.bind(raw) + ") AS expected " +
+				"WHERE NOT EXISTS (SELECT 1 FROM json_each(" + field + ") AS actual " +
+				"WHERE actual.type = expected.type AND actual.value IS expected.value))", nil
+		}
 		raw, err := jsonString(value)
 		if err != nil {
 			return "", err
