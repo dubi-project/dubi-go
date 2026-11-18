@@ -3,6 +3,8 @@
 This independent package uses the public Log API. It does not register or change
 the existing dubi-go application framework. Only the Go standard library is used.
 
+Every Log-enabled tenant has a protected `default` Logbase. Use `client.Logbase("default")` directly; no prior create call is required. Catalog/default access lazily initializes metadata, including for read-only callers; log batches are created only on append. Retiring `default` returns HTTP 409 with `logbase_protected`.
+
 ```go
 client, err := logbase.New(logbase.Options{
     Endpoint: "https://api.example.com:7714",
