@@ -144,3 +144,7 @@ auth:
   cookie: dubi_token
   ttl: 24h
 ```
+
+The independent [Logbase HTTP client](logbase/README.md) provides immutable log
+batches, stable retries, optional gzip and a bounded automatic batching writer,
+plus typed queries/paging, aggregation, export, Tail and Logbase/job management.
